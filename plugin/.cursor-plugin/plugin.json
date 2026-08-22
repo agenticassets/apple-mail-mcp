@@ -1,6 +1,6 @@
 {
   "name": "apple-mail",
-  "version": "3.11.8",
+  "version": "3.11.9",
   "description": "Draft-safe Apple Mail and Apple Calendar workflows for Cursor with 41 MCP tools.",
   "mcpServers": "./mcp.json"
 }

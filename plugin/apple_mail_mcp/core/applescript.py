@@ -1,7 +1,14 @@
 """Low-level osascript execution, the runner Protocol, and the timeout exception."""
 
+import errno
+import fcntl
+import os
+import pwd
+import stat
 import subprocess
 import threading
+import time
+from pathlib import Path
 from typing import Protocol
 
 from apple_mail_mcp.backend.base import ToolError
@@ -40,6 +47,139 @@ class AppleScriptTimeout(Exception):
 # blocking, thread-safe mutex is what both call paths need.
 _MAIL_LOCK = threading.Lock()
 _LOCK_WAIT_TIMEOUT = 300
+
+# Different plugin hosts (and different installed versions) run in separate
+# processes, so ``_MAIL_LOCK`` alone cannot protect Mail.app from concurrent
+# UI automation. This stable per-user cache location deliberately does not
+# depend on a plugin install path, version, or a host's ``HOME`` override, and
+# its private directory keeps other local users from replacing the lock target.
+
+
+def _effective_user_cache_directory() -> Path:
+    """Return the effective user's canonical macOS cache location."""
+    return Path(pwd.getpwuid(os.geteuid()).pw_dir) / "Library" / "Caches" / "apple-mail-mcp"
+
+
+_PROCESS_LOCK_DIRECTORY = _effective_user_cache_directory()
+_PROCESS_LOCK_FILENAME = "mail-ui.lock"
+_PROCESS_LOCK_POLL_S = 0.05
+
+
+def _process_lock_error() -> ToolError:
+    """Return the safe failure used when the shared lock cannot be trusted."""
+    return ToolError(
+        code="APPLE_SCRIPT_LOCK_UNAVAILABLE",
+        message="AppleScript execution cannot safely acquire its shared Mail lock.",
+        remediation={
+            "hint": (
+                "Close active plugin hosts, make sure the private Apple Mail cache directory is "
+                "accessible and not symlinked, then retry the operation."
+            )
+        },
+    )
+
+
+def _open_process_mail_lock_directory() -> int:
+    """Open the private cache directory only when its target is safe to use."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise _process_lock_error()
+    try:
+        _PROCESS_LOCK_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(
+            _PROCESS_LOCK_DIRECTORY,
+            os.O_RDONLY | directory_flag | nofollow | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise _process_lock_error() from exc
+
+    try:
+        directory_stat = os.fstat(descriptor)
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.geteuid():
+            raise _process_lock_error()
+        if (directory_stat.st_mode & 0o7777) != 0o700:
+            try:
+                os.fchmod(descriptor, 0o700)
+            except OSError as exc:
+                raise _process_lock_error() from exc
+            directory_stat = os.fstat(descriptor)
+        unsafe_directory = (
+            not stat.S_ISDIR(directory_stat.st_mode)
+            or directory_stat.st_uid != os.geteuid()
+            or (directory_stat.st_mode & 0o7777) != 0o700
+        )
+        if unsafe_directory:
+            raise _process_lock_error()
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_process_mail_lock() -> int:
+    """Open the stable interprocess lock only when its target is safe to use.
+
+    The lock contains no data, but following a symlink or accepting another
+    user's file would allow an unrelated target to control Mail serialization.
+    ``O_NOFOLLOW`` plus a verified directory descriptor make the opens
+    race-safe; descriptor checks validate the actual object opened rather than
+    a path observed earlier.
+    """
+    directory_descriptor = _open_process_mail_lock_directory()
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(_PROCESS_LOCK_FILENAME, flags, 0o600, dir_fd=directory_descriptor)
+    except OSError as exc:
+        raise _process_lock_error() from exc
+    finally:
+        os.close(directory_descriptor)
+
+    try:
+        lock_stat = os.fstat(descriptor)
+        unsafe_target = (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_uid != os.geteuid()
+            or lock_stat.st_nlink != 1
+            or (lock_stat.st_mode & 0o7777) != 0o600
+        )
+        if unsafe_target:
+            raise _process_lock_error()
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _acquire_process_mail_lock(deadline: float) -> int:
+    """Acquire the process-wide Mail lock before *deadline*, returning its fd."""
+    descriptor = _open_process_mail_lock()
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AppleScriptTimeout(
+                        "AppleScript queued too long waiting for Mail.app to become available"
+                    ) from None
+                time.sleep(min(_PROCESS_LOCK_POLL_S, remaining))
+            except OSError as exc:
+                if exc.errno != errno.EINTR:
+                    raise _process_lock_error() from exc
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _release_process_mail_lock(descriptor: int) -> None:
+    """Release and close the advisory lock; process exit also releases it."""
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _resolve_timeout(timeout: int | None) -> int | float:
@@ -87,9 +227,10 @@ def run_applescript(script: str, timeout: int | None = DEFAULT_TIMEOUT_S) -> str
     so callers can isolate slow-account failures without losing siblings'
     partial results.
 
-    Serializes the actual ``osascript`` invocation behind ``_MAIL_LOCK`` so
-    only one AppleScript call runs against Mail.app at a time; callers that
-    wait longer than ``_LOCK_WAIT_TIMEOUT`` seconds for their turn raise
+    Serializes the actual ``osascript`` invocation behind both the in-process
+    ``_MAIL_LOCK`` and a user-private advisory file lock, so one AppleScript
+    call reaches Mail.app across all plugin hosts. Callers that wait longer than
+    ``_LOCK_WAIT_TIMEOUT`` seconds total for their turn raise
     ``AppleScriptTimeout`` instead of queuing indefinitely.
 
     Raises ``ToolError(code="INVALID_TIMEOUT")`` for a non-positive or
@@ -97,9 +238,12 @@ def run_applescript(script: str, timeout: int | None = DEFAULT_TIMEOUT_S) -> str
     never queues behind live Mail work and never reaches ``osascript``.
     """
     effective_timeout = _resolve_timeout(timeout)
+    queue_deadline = time.monotonic() + _LOCK_WAIT_TIMEOUT
     if not _MAIL_LOCK.acquire(timeout=_LOCK_WAIT_TIMEOUT):
         raise AppleScriptTimeout("AppleScript queued too long waiting for Mail.app to become available")
+    process_lock_descriptor: int | None = None
     try:
+        process_lock_descriptor = _acquire_process_mail_lock(queue_deadline)
         try:
             result = subprocess.run(
                 ["osascript", "-"],
@@ -123,4 +267,6 @@ def run_applescript(script: str, timeout: int | None = DEFAULT_TIMEOUT_S) -> str
         except Exception:
             raise
     finally:
+        if process_lock_descriptor is not None:
+            _release_process_mail_lock(process_lock_descriptor)
         _MAIL_LOCK.release()

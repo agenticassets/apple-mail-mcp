@@ -106,10 +106,10 @@ The lint test `tests/core/test_no_unbounded_whose.py` enforces the first four ru
 
 ### Async + per-account isolation
 
-- Tools that fan out across accounts should be `async def` and dispatch each account via `asyncio.to_thread(run_applescript, …)`, one account at a time, in a plain loop (not `asyncio.gather`). Mail's AppleScript bridge is serialized behind a single process-wide lock (`core/applescript.py`, `_MAIL_LOCK`), so concurrent dispatch only adds thread churn and does not run accounts in parallel. Wall time is the sum across accounts, not the slowest single account.
+- Tools that fan out across accounts should be `async def` and dispatch each account via `asyncio.to_thread(run_applescript, …)`, one account at a time, in a plain loop (not `asyncio.gather`). All installed plugin hosts for this macOS user queue each `osascript` invocation through one shared cross-process lock (`core/applescript.py`, `_MAIL_LOCK`), so concurrent dispatch only adds thread churn and does not run accounts in parallel. Wall time is the sum across accounts, not the slowest single account.
 - Pair with per-account `AppleScriptTimeout` catch; append failing accounts to an `errors: list[str]` field and include structured error details when a tool can distinguish timeout from another Mail/App failure. Partial results > total failure.
 - Single-account tools (`compose_email`, `move_email`, `manage_drafts`, `get_top_senders`, etc.) stay sync.
-- **Never issue parallel/concurrent Mail tool calls from an agent.** Every `osascript` invocation queues behind `_MAIL_LOCK` (up to 300s before raising `AppleScriptTimeout`); calling multiple Apple Mail tools at once does not speed anything up and can time out. Call one Mail tool at a time and wait for its result.
+- **Never issue parallel/concurrent Mail tool calls from an agent.** Every installed plugin host for this macOS user queues each `osascript` invocation through the shared `_MAIL_LOCK` (up to 300s before raising `AppleScriptTimeout`); calling multiple Apple Mail tools at once does not speed anything up and can time out. Call one Mail tool at a time and wait for its result.
 
 ### Timeout exposure
 

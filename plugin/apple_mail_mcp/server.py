@@ -148,10 +148,11 @@ class _ToolErrorEnvelopeServer:
 _fastmcp_server = FastMCP(
     "Apple Mail MCP",
     instructions=(
-        "Mail.app and Calendar.app automation is single-threaded. This server "
-        "serializes every AppleScript call behind one lock, so invoking "
-        "multiple Apple Mail or Apple Calendar tools at once does not run "
-        "them in parallel; the calls queue and can time out waiting their "
+        "Mail.app and Calendar.app automation is single-threaded. All installed "
+        "plugin hosts for this macOS user queue every AppleScript call through "
+        "one shared cross-process lock, so invoking multiple Apple Mail or Apple "
+        "Calendar tools at once does not run them in parallel; the calls queue "
+        "and can time out waiting their "
         "turn. Call one tool at a time and wait for its result before "
         "issuing the next. On large Exchange or Gmail mailboxes, prefer "
         "small bounded calls (low max_emails, small recent_days, offset "

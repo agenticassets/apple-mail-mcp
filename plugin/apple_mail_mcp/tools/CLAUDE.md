@@ -54,7 +54,7 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 ## Add a tool
 
 1. Pick module by domain; add `@mcp.tool(annotations=…)` using presets from `../server.py` (matrix: [`tasks/reference/phase-3-annotation-matrix.md`](../../../tasks/reference/phase-3-annotation-matrix.md)).
-2. `@inject_preferences` on user-facing tools; user strings → `core.escape_applescript()`; multi-account fan-out → `async` + `asyncio.to_thread`, dispatched sequentially (one account at a time), not via `asyncio.gather`, since Mail AppleScript is serialized behind a single-flight lock in `core/applescript.py`.
+2. `@inject_preferences` on user-facing tools; user strings → `core.escape_applescript()`; multi-account fan-out → `async` + `asyncio.to_thread`, dispatched sequentially (one account at a time), not via `asyncio.gather`, since all installed plugin hosts for this macOS user queue each `osascript` invocation through the shared cross-process lock in `core/applescript.py`.
 3. New file → import in `__init__.py`; update the root release version table files when releasing, plus `apple-mail-mcpb/manifest.json` `tools[]` and advertised tool count.
 
 ## Performance (summary)
@@ -63,7 +63,7 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 - Pass `timeout` through to `run_applescript`; catch `AppleScriptTimeout` → structured error with account name.
 - **ID-first mutations (v3.7.0+):** `move_email`, `update_email_status`, and `manage_trash` prefer `message_ids` from a prior list/search. `subject_keyword` / `sender` on action tools return `TARGET_SELECTOR_DEPRECATED` before any scan (even with `allow_filter_scan=True`). Date/bulk filter paths require `allow_filter_scan=True` or return `FILTER_SCAN_DISABLED`. `search_emails` requires `allow_body_scan=True` when `body_text` is set or returns `BODY_SCAN_DISABLED`.
 - **Scan caps (2026-07, AGENTIC-988 hardening):** `SEARCH_HARD_CEILING` and `INBOX_HARD_CEILING` in `constants.py` `SCAN_BOUNDS` clamp `search_emails` and `list_inbox_emails` to at most **50 messages scanned per call**, regardless of `limit` / `max_emails` / `recent_days`; `get_statistics` per-mailbox reads share the same 50-message cap (fanning across 10 or 20 mailboxes instead); `mailbox="All"` fan-out stays capped at 10 accounts. See `docs/CLAUDE-conventions.md` § Centralized scan caps.
-- **Mail calls are serialized:** every `osascript` call goes through one process-wide lock in `core/applescript.py`. Concurrent/parallel Mail tool calls queue behind each other and can time out. Call one Mail tool at a time.
+- **Mail calls are serialized:** all installed plugin hosts for this macOS user queue every `osascript` invocation through one shared cross-process lock in `core/applescript.py`. Concurrent/parallel Mail tool calls queue behind each other and can time out. Call one Mail tool at a time.
 - Mutations: `normalize_message_ids` / `message_ids` for targeted ops. Detail: `docs/CLAUDE-conventions.md`.
 
 ## Structured error codes (agent-facing)

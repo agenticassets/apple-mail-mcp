@@ -372,7 +372,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | Tool | Description |
 |------|-------------|
 | `get_inbox_overview` | Dashboard with unread counts, folders, and recent emails |
-| `list_inbox_emails` | List emails (defaults to 50 most recent). Multi-account calls dispatch sequentially, one account at a time (Mail calls are serialized); scans at most 50 messages per call |
+| `list_inbox_emails` | List emails (defaults to 50 most recent). Multi-account calls dispatch sequentially, one account at a time (all installed plugin hosts queue each `osascript` call); scans at most 50 messages per call |
 | `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
 | `list_account_addresses` | List sender aliases configured for a Mail account |
@@ -550,7 +550,7 @@ To stay fast on large mailboxes (24K+ messages), the server applies conservative
 | **50-message hard scan ceiling** | `search_emails`, `list_inbox_emails` | None: every call scans at most 50 messages regardless of `limit` / `max_emails` / `recent_days` / window. Page across multiple calls or narrow the window (`recent_days`, `date_from`) to see more |
 | Single account | All scoped tools when `DEFAULT_MAIL_ACCOUNT` is set | Pass `account=<name>` or `all_accounts=True` |
 | Per-call timeout | All long-running tools | Pass `timeout=<seconds>` |
-| **Mail calls serialized** | Every Apple Mail tool | None: all AppleScript/Mail calls run through one process-wide lock. Call one Apple Mail tool at a time and wait for its result; parallel or concurrent Mail tool calls queue behind each other and can time out. |
+| **Mail calls serialized** | Every Apple Mail tool | None: all installed plugin hosts for this macOS user queue every `osascript` invocation through one shared cross-process lock. Call one Apple Mail tool at a time and wait for its result; parallel or concurrent Mail tool calls queue behind each other and can time out. |
 | Unbounded scans refused | All routine scan/search tools (`recent_days=0` / `max_emails=0`) | Returns structured error `code: UNBOUNDED_SCAN_REQUIRED`; narrow the window (`recent_days` / `date_from`) or page through bounded calls (`export_emails`, `list_inbox_emails`, `search_emails`). `full_inbox_export` is disabled and is not a working fallback |
 | **ID-first mutations** | `move_email`, `update_email_status`, `manage_trash` | Pass `message_ids=[...]` from `search_emails`, `list_inbox_emails`, or `get_needs_response(output_format="json")` (fast, preferred). Date/bulk filter paths require `allow_filter_scan=True` or return `code: FILTER_SCAN_DISABLED`. `subject_keyword` and `sender` on action tools always return `TARGET_SELECTOR_DEPRECATED`, even with `allow_filter_scan=True`. |
 | **Gated filter scans** | `move_email`, `update_email_status`, `manage_trash` (date/bulk path only) | `allow_filter_scan=True` + `older_than_days` or `apply_to_all` (slow; timeout-prone on 24k+ inboxes). Subject/sender selectors never work on action tools. Filter paths still default to a 48h `recent_days` window. |

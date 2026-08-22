@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 3.11.9 - 2026-08-22
+
+- **Separate plugin hosts could automate Mail at the same time.** The existing
+  single-flight lock applied only inside one Python process, so concurrent
+  Codex, Claude, or Cursor plugin servers could interleave AppleScript calls
+  with a native reply's focus-guarded typing transaction. Every `osascript`
+  invocation now also acquires a version-independent advisory lock in a
+  private per-user cache directory. The lock releases when a process exits,
+  including after a crash, and fails closed if its directory or file cannot be
+  safely trusted.
+
 ## 3.11.8 - 2026-08-19
 
 Every entry below is one shape: a failure that reported success. The v3.11.7

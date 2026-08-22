@@ -1,7 +1,7 @@
 {
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
-  "version": "3.11.8",
+  "version": "3.11.9",
   "description": "Natural language interface for Apple Mail and Apple Calendar with 41 tools: email search, composition, bulk operations, smart inbox analytics, folder management, taxonomy, archiving, drafting, draft verification, attachments, Mail rules advising, bounded export, security-hardened destructive operations, bounded calendar reads, conflict-checked event creation, availability search, and gated calendar management. Bundled Claude Code workflow skills plus Interactive UI Dashboard.",
   "author": {
     "name": "Agentic Assets"

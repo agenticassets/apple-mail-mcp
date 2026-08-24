@@ -20,7 +20,7 @@ from apple_mail_mcp.tools.compose.payload import (
 )
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Manage Drafts")
 @inject_preferences
 def manage_drafts(
     account: str | None = None,

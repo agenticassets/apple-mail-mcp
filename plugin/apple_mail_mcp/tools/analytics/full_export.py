@@ -17,7 +17,7 @@ from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Full Inbox Export")
 @inject_preferences
 async def full_inbox_export(
     account: str | None = None,

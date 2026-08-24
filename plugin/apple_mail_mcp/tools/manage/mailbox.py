@@ -14,7 +14,7 @@ from apple_mail_mcp.tools import manage
 _INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Create Mailbox")
 @inject_preferences
 def create_mailbox(
     account: str | None = None,

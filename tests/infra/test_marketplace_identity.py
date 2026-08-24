@@ -49,6 +49,7 @@ def test_standalone_marketplace_manifests_keep_compatibility_identity() -> None:
         "manifests": [
             ".claude-plugin/marketplace.json",
             ".agents/plugins/marketplace.json",
+            ".cursor-plugin/marketplace.json",
         ],
         "rename": False,
     }
@@ -57,6 +58,26 @@ def test_standalone_marketplace_manifests_keep_compatibility_identity() -> None:
         manifest = _json(manifest_path)
         assert manifest["name"] == compatibility["marketplace_id"]
         assert manifest["plugins"][0]["name"] == identity["plugin"]["id"]
+
+
+def test_cursor_marketplace_catalog_points_at_shared_plugin_runtime() -> None:
+    """The root Cursor catalog is a standalone compatibility catalog over the shared plugin/ payload."""
+    identity = _json("tools/marketplace_identity.json")
+    catalog = _json(".cursor-plugin/marketplace.json")
+    manifest = _json("plugin/.cursor-plugin/plugin.json")
+
+    assert catalog["name"] == identity["standalone_compatibility"]["marketplace_id"]
+    assert catalog["owner"] == {"name": identity["primary_marketplace"]["display_name"]}
+    assert catalog["plugins"][0]["source"] == "./" + identity["plugin"]["source_payload"]
+    assert catalog["plugins"][0]["name"] == manifest["name"] == identity["plugin"]["id"]
+
+    # Public repo: the listing carries no contact address, and every asset it
+    # references is committed under plugin/ so Cursor can resolve it by relative path.
+    assert "email" not in manifest["author"]
+    assert "email" not in catalog["owner"]
+    assert (ROOT / "plugin" / manifest["logo"]).is_file()
+    assert (ROOT / "plugin" / manifest["skills"]).is_dir()
+    assert (ROOT / "plugin" / "README.md").is_file()
 
 
 def test_user_and_maintainer_docs_preserve_the_identity_boundary() -> None:

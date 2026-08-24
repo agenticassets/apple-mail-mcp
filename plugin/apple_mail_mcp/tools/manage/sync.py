@@ -10,7 +10,7 @@ from apple_mail_mcp.server import IDEMPOTENT_WRITE_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import manage
 
 
-@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS, title="Synchronize Account")
 @inject_preferences
 def synchronize_account(
     account: str | None = None,

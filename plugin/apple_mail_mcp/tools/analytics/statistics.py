@@ -45,7 +45,7 @@ _MAILBOX_BREAKDOWN_READ_NOTE = escape_applescript(READ_COUNT_NOTE_LINE)
 _MAILBOX_BREAKDOWN_READ_LABEL = escape_applescript(derived_read_text_label())
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Email Statistics")
 @inject_preferences
 def get_statistics(
     account: str | None = None,

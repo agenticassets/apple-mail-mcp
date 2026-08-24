@@ -7,7 +7,7 @@ Build files for the **`.mcpb`** distributable. Same Python server as [`plugin/`]
 
 | File | Role |
 |------|------|
-| `manifest.json` | Version, `tools[]`, `user_config`, server entry |
+| `manifest.json` | `manifest_version` (MCPB spec 0.3), version, `tools[]`, `user_config`, server entry, `compatibility`, `privacy_policies`, `support` |
 | `build-mcpb.sh` | Stage `plugin/` → zip `../apple-mail-mcp-v{VERSION}.mcpb` |
 
 ```bash
@@ -24,11 +24,31 @@ Copies `apple_mail_mcp.py`, `start_mcp.sh`, `requirements.lock`, `wheelhouse/`, 
 
 Full `tools[]` in `manifest.json` must list every `@mcp.tool` name in code; description must claim correct count (**41**). Count with `find plugin/apple_mail_mcp/tools -name '*.py' | xargs grep -h '^@mcp.tool' | wc -l` (recursive; package-nested tools count). Validated by [`tools/gates/validate_manifests.sh`](../tools/gates/validate_manifests.sh).
 
+## Directory submission fields
+
+Claude Desktop extension-directory submissions require a current manifest, so `manifest.json` carries:
+
+| Field | Value | Why |
+|-------|-------|-----|
+| `manifest_version` | `"0.3"` (first key) | Current MCPB spec; the legacy `dxt_version` key is deprecated and the validator rejects it |
+| `compatibility.platforms` | `["darwin"]` | Mail.app and Calendar.app exist only on macOS; the spec has no arch field, so the arm64-only wheelhouse is documented in the README instead |
+| `compatibility.runtimes.python` | `">=3.13,<3.14"` | `start_mcp.sh` hard-requires `python3.13` and the offline wheelhouse ships `cp313` arm64 wheels; `pyproject.toml`'s `>=3.10` describes the PyPI package, not this bundle |
+| `privacy_policies` | HTTPS link to `PRIVACY.md` on `main` | Missing or non-HTTPS privacy policies are an immediate directory rejection |
+| `support` | GitHub issues URL | Optional in the spec; the directory listing asks for a support contact |
+
+`server.type` stays `"python"` (`uv` needs spec 0.4 and an unbundled `pyproject.toml` install, which this offline payload does not use). `_check_mcpb_directory_contract` in `tools/manifest_checks/install_contracts.py` enforces every row above on each commit. Cross-check the schema with the official CLI without installing it globally:
+
+```bash
+npx -y @anthropic-ai/mcpb@latest validate apple-mail-mcpb/manifest.json
+```
+
+Spec: https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md · Submission rules: https://claude.com/docs/connectors/building/submission
+
 ## vs plugin/ and Cowork
 
 | | Claude Code | Claude Desktop (chat) | Claude Desktop (Cowork) |
 |---|-------------|------------------------|--------------------------|
-| Manifest | `plugin/.claude-plugin/plugin.json` | `manifest.json` (DXT) | `plugin/.claude-plugin/plugin.json` |
+| Manifest | `plugin/.claude-plugin/plugin.json` | `manifest.json` (MCPB spec 0.3) | `plugin/.claude-plugin/plugin.json` |
 | Discovery | `.claude-plugin/marketplace.json` | Direct `.mcpb` install via "Add Custom Plugin" / "Install from file" | Customize → Add plugin → Upload plugin (accepts `.plugin`) |
 | Artifact | `apple-mail-plugin.zip` | `apple-mail-mcp-v{VERSION}.mcpb` | `apple-mail.plugin` (byte-identical to the `.zip`) |
 | Entrypoint | `start_mcp.sh` via `mcpServers` in `plugin.json` | `start_mcp.sh` via `manifest.json` `server.mcp_config` | `start_mcp.sh` via `mcpServers` in `plugin.json` |

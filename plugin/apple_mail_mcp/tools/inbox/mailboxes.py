@@ -23,7 +23,7 @@ from apple_mail_mcp.tools.unread_provenance import (
 )
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Mailbox Folders")
 @inject_preferences
 def list_mailboxes(
     account: str | None = None,

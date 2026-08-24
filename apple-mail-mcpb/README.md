@@ -47,6 +47,10 @@ Skills included (each subfolder owns a `SKILL.md`):
 
 Also copies `skills/CLAUDE.md` authoring notes — safe to ignore for runtime.
 
+## Privacy Policy
+
+This bundle's privacy policy is published at https://github.com/Agentic-Assets/apple-mail-mcp/blob/main/PRIVACY.md and is declared in `manifest.json` under `privacy_policies`.
+
 ## Operational notes
 
 - Keep **`DEFAULT_MAIL_ACCOUNT`** set when multiple accounts fan out slowly.

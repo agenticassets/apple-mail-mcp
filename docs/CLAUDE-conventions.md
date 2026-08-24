@@ -215,7 +215,7 @@ marketplace/UI admission.
 |----------|--------|-------------------|
 | `apple-mail-plugin.zip` | Claude Code standalone compatibility marketplace | `claude plugin marketplace add Agentic-Assets/apple-mail-mcp --scope user`, `claude plugin marketplace update apple-mail-mcp`, then `claude plugin install apple-mail@apple-mail-mcp --scope user` (uses `.claude-plugin/marketplace.json`) |
 | `apple-mail.plugin` | Claude Desktop **Cowork** | Customize → Add plugin → **Upload plugin**. The Cowork UI accepts the `.plugin` extension; without it the upload silently fails. |
-| `apple-mail-mcp-v{VERSION}.mcpb` | Claude Desktop **chat extension** | "Add Custom Plugin" / "Install from file" (DXT bundle built with `mcpb pack`) |
+| `apple-mail-mcp-v{VERSION}.mcpb` | Claude Desktop **chat extension** | "Add Custom Plugin" / "Install from file" (MCPB bundle, `manifest_version` 0.3 with `compatibility` and `privacy_policies`, built with `mcpb pack`) |
 | `.agents/plugins/marketplace.json` + `plugin/.codex-plugin/plugin.json` | Codex Desktop/CLI standalone compatibility marketplace | `codex plugin marketplace add https://github.com/Agentic-Assets/apple-mail-mcp.git` then `codex plugin add apple-mail@apple-mail-mcp`; local checkouts are maintainer/offline only |
 | `plugin/.cursor-plugin/plugin.json` + `plugin/mcp.json` | Cursor plugin adapter | Cursor resolves `/bin/bash ${CURSOR_PLUGIN_ROOT}/start_mcp.sh --draft-safe`; local Cursor Agent acceptance passed, while marketplace/UI admission remains separate |
 
@@ -224,6 +224,7 @@ marketplace/UI admission.
 **Never** ship a release where any required artifact or manifest is missing or stale. Real installer failures we have hit and now guard against:
 
 - MCPB built with raw `zip -r .` emitting zero-byte directory entries → Claude Desktop installer aborts with `ENOENT`. Build with `mcpb pack` or `zip -X -D`. Guard: `_check_no_directory_entries`.
+- MCPB manifest on the legacy `dxt_version` key, or missing `privacy_policies` / `compatibility.platforms` → Claude Desktop extension-directory submission is rejected. Guard: `_check_mcpb_directory_contract`; detail in `apple-mail-mcpb/CLAUDE.md`.
 - Plugin zip wrapping files under `plugin/` prefix → Cowork rejects with "No manifest found". Build from inside `plugin/`. Guard: `test_plugin_zip_has_manifest_at_root_not_nested`.
 - `.plugin` extension missing → Cowork "Upload plugin" rejects the `.zip` silently. Guard: `_check_plugin_file_parity`.
 

@@ -21,7 +21,7 @@ from apple_mail_mcp.tools.calendar.helpers import (
 )
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Calendar Events")
 @inject_preferences
 async def list_events(
     calendar: str | None = None,

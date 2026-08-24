@@ -36,7 +36,7 @@ from apple_mail_mcp.tools.reply_state_wiring import (
 )
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Inbox Emails")
 @inject_preferences
 async def list_inbox_emails(
     account: str | None = None,

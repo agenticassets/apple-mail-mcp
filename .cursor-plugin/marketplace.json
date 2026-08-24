@@ -1,0 +1,13 @@
+{
+  "name": "apple-mail-mcp",
+  "owner": {
+    "name": "Agentic Assets"
+  },
+  "plugins": [
+    {
+      "name": "apple-mail",
+      "source": "./plugin",
+      "description": "Draft-safe Apple Mail and Apple Calendar automation for Cursor with 41 MCP tools and bundled workflow skills on macOS."
+    }
+  ]
+}

@@ -9,7 +9,7 @@ from apple_mail_mcp.core import inject_preferences
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Respond to Invitation")
 @inject_preferences
 def respond_to_invitation(
     event_id: str | None = None,

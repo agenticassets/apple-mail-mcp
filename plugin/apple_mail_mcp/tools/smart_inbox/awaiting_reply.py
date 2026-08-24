@@ -320,7 +320,7 @@ def _awaiting_reply_error(message: str, *, output_format: str) -> str | dict[str
     return f"Error: {message}"
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Awaiting Reply")
 @inject_preferences
 def get_awaiting_reply(
     account: str | None = None,

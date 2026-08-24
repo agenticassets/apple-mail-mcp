@@ -22,7 +22,7 @@ from apple_mail_mcp.tools.compose.payload import (
 )
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Create Rich Draft")
 @inject_preferences
 def create_rich_email_draft(
     account: str | None = None,

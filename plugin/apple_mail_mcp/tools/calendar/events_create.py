@@ -73,7 +73,7 @@ def resolve_event_times(
     return start_dt, end_dt, resolved_name
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Create Event")
 @inject_preferences
 def create_event(
     title: str,

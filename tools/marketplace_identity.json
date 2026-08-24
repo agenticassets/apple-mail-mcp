@@ -26,7 +26,8 @@
     "selector": "apple-mail@apple-mail-mcp",
     "manifests": [
       ".claude-plugin/marketplace.json",
-      ".agents/plugins/marketplace.json"
+      ".agents/plugins/marketplace.json",
+      ".cursor-plugin/marketplace.json"
     ],
     "rename": false
   }

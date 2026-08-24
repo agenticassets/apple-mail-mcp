@@ -50,7 +50,7 @@ def _parse_attachment_listing_rows(text: str) -> list[dict[str, Any]]:
     return items
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Email Attachments")
 @inject_preferences
 def list_email_attachments(
     account: str | None = None,

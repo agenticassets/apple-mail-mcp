@@ -208,7 +208,7 @@ def _move_email_by_message_ids(
         )
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Move Email")
 @inject_preferences
 def move_email(
     account: str | None = None,

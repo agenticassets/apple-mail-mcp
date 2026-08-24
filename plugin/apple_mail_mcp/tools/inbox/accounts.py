@@ -28,7 +28,7 @@ def _list_mail_accounts(timeout: int | None = 30) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Mail Accounts")
 @inject_preferences
 def list_accounts(timeout: int | None = 30) -> list[str]:
     """
@@ -60,7 +60,7 @@ def list_accounts(timeout: int | None = 30) -> list[str]:
     return result.split("|") if result else []
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Account Email Addresses")
 @inject_preferences
 def list_account_addresses(timeout: int | None = 30) -> dict[str, list[str]]:
     """

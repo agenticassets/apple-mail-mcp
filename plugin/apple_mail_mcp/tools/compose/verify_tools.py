@@ -75,7 +75,7 @@ def _resolve_source_message(
     return _build_source_resolution(in_reply_to, resolve_recent_days, matched_record)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Verify Draft")
 @inject_preferences
 def verify_draft(
     account: str | None = None,
@@ -273,7 +273,7 @@ def verify_draft(
     return json.dumps(payload)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Verify Drafts")
 @inject_preferences
 def verify_drafts(
     account: str | None = None,

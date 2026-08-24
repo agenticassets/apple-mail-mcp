@@ -245,7 +245,7 @@ end try
             temp_path.unlink()
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Compose Email")
 @inject_preferences
 def compose_email(
     account: str | None = None,

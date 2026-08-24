@@ -22,7 +22,7 @@ from apple_mail_mcp.tools import manage
 from apple_mail_mcp.tools.manage.helpers import _check_message_ids_cap
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Save Attachment")
 @inject_preferences
 def save_email_attachment(
     account: str | None = None,

@@ -198,7 +198,7 @@ def _verify_exact_saved_forward_draft(
     return lines
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Forward Email")
 @inject_preferences
 def forward_email(
     account: str | None = None,

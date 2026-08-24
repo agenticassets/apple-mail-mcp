@@ -95,6 +95,16 @@ class ReadOnlyRegistryTests(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertIsNotNone(tool.annotations, f"{name} missing annotations")
 
+    def test_all_tools_have_short_unique_titles(self):
+        # Plugin-directory contract: every tool exposes a human-readable
+        # ``title`` alongside readOnlyHint/destructiveHint.
+        for name, tool in self.by_name.items():
+            with self.subTest(tool=name):
+                self.assertTrue(tool.title and tool.title.strip(), f"{name} missing title")
+                self.assertLessEqual(len(tool.title), 40, f"{name} title too long: {tool.title!r}")
+        titles = [tool.title for tool in self.by_name.values()]
+        self.assertEqual(len(set(titles)), len(titles), "tool titles must be unique")
+
     def test_read_only_tools_annotated(self):
         for name in READ_ONLY_TOOLS:
             tool = self.by_name[name]

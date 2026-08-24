@@ -29,7 +29,7 @@ def _render_get_events_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Events by ID")
 @inject_preferences
 async def get_events_by_id(
     event_ids: list[str],

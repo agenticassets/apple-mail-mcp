@@ -84,7 +84,7 @@ end if""",
     )
 
 
-@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS, title="Update Email Status")
 @inject_preferences
 def update_email_status(
     account: str | None = None,

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 3.12.0 - 2026-08-24
+
+Directory-listing release. No tool behavior changed; every item below is
+metadata, documentation, or a validator that a vendor plugin-directory reviewer
+(Claude plugin directory, Claude Desktop extension directory, Cursor
+Marketplace) checks before admitting a plugin.
+
+- **Every tool now carries a human-readable `title`.** Host plugin browsers and
+  directory reviewers show `title` beside the tool name; the 41 tools had only
+  their snake_case names. Titles sit on the `@mcp.tool` decorator next to the
+  existing `readOnlyHint` / `destructiveHint` / `idempotentHint` annotations,
+  and the registry test fails if any tool lacks one.
+- **The Claude Desktop bundle manifest moved from the deprecated
+  `dxt_version: "0.1"` to MCPB `manifest_version: "0.3"`,** adding
+  `compatibility.platforms: ["darwin"]`, `compatibility.runtimes.python:
+  ">=3.13,<3.14"`, `privacy_policies`, `documentation`, and `support`. The
+  desktop extension directory rejects a submission missing any of these.
+  `_check_mcpb_directory_contract` in `tools/manifest_checks/install_contracts.py`
+  enforces them on every commit.
+- **Cursor Marketplace manifests.** A root `.cursor-plugin/marketplace.json`
+  (the file Cursor reads for a repository submission) plus a full
+  `plugin/.cursor-plugin/plugin.json` with `displayName`, `author`, `license`,
+  `homepage`, `repository`, `keywords`, `category`, `logo`, and `skills`. New
+  `plugin/assets/logo.svg` and `plugin/README.md` ship inside the plugin
+  payload; `distribution/marketplace-payload.json` classifies them and
+  `tools/manifest_checks/cursor.py` validates the marketplace file.
+- **`PRIVACY.md` and `SECURITY.md`** at the repository root, with README
+  "Privacy Policy" and "Support" sections. Every directory form asks for a
+  privacy-policy URL and a support channel; the MCPB manifest and the bundle
+  README point at these files. Cowork and MCPB install steps in the README now
+  link the latest GitHub Release instead of a local build.
+
 ## 3.11.9 - 2026-08-22
 
 - **Separate plugin hosts could automate Mail at the same time.** The existing

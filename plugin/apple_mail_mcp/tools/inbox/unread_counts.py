@@ -96,7 +96,7 @@ def _unread_read_error_arm(row_expression: str, error_var: str) -> str:
                             set end of resultList to {row_expression}"""
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Mailbox Unread Counts")
 @inject_preferences
 def get_mailbox_unread_counts(
     account: str | None = None,

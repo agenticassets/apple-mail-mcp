@@ -123,7 +123,7 @@ def _run_trash_script(script: str, *, account: str, effective_timeout: int) -> s
         return _timed_out_error(account, effective_timeout)
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Manage Trash")
 @inject_preferences
 def manage_trash(
     account: str | None = None,

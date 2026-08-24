@@ -55,7 +55,7 @@ from apple_mail_mcp.tools.compose.verification import (
 )
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Reply to Email")
 @inject_preferences
 def reply_to_email(
     account: str | None = None,

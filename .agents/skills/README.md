@@ -48,5 +48,14 @@ not use.
 
 **Re-syncing a vendored skill from upstream will discard these corrections.**
 `computedHash` in `skills-lock.json` records the upstream source at pin time, not
-the bytes of the local file, so it does not detect the divergence. Diff against
-upstream and re-apply the repo-specific notes rather than overwriting.
+the bytes of the local file, so it does not detect the divergence. Verified by
+hashing every pinned file: none matched its recorded hash, including
+`create-cowork-plugin`, which nobody had edited. Diff against upstream and
+re-apply the repo-specific notes rather than overwriting.
+
+**Two lock keys no longer match their skill's `name:`.** `skills-lock.json` is
+keyed by the skill name as it stood upstream at pin time, so `plugin-settings`
+and `plugin-structure` are still filed there under `Plugin Settings` and
+`Plugin Structure`. Their local frontmatter was changed to the kebab-case form
+that matches the directory, which is what every other skill here uses and what a
+skill-name slug has to be. Look those two up by `skillPath`, not by name.

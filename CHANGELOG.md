@@ -330,6 +330,19 @@ corrected rather than left to mislead the next agent.
   (which does not exist — the bound is enforced at issue time in
   `bounded_scan.py`), the two-layer in-process plus cross-process Mail lock,
   and the release version table, which covers seven files rather than six.
+- **The AppleScript compile gate's ledger of unreachable modules is now
+  empty.** All three remaining entries turned out to be reachable once the
+  hook could hand each tool arguments it accepts: a dataclass sample for
+  `reply_runner` (whose script *deletes a draft*, and which no gate had ever
+  compiled), a home-directory `save_path` and single-id selector for
+  `attachments`, and the one scope/format combination that reaches the script
+  `export_emails` builds itself. The ledger stays load-bearing — an
+  unreachable module that is *not* listed still blocks — and the gate was
+  proved able to fail by injecting a syntax error into `reply_runner`, which
+  exited 2 naming the function. Because a passing count cannot tell one
+  compiled script from another, the arguments that select the `export_emails`
+  path are pinned by their own test rather than inferred from
+  `compiled 1 script(s)`.
 - A merge artifact that had spliced a second file preamble and a duplicate
   `3.11.3` heading into the middle of this changelog is removed, and six
   broken relative links under `tasks/reference/` are repaired.

@@ -122,6 +122,22 @@ bash tools/gates/dev-check.sh                    # manifests + module budget + p
 
 Sync tool-count claims in manifests with `find plugin/apple_mail_mcp/tools -name '*.py' | xargs grep -h '^@mcp.tool' | wc -l` (recursive: `compose/` is a package). Codex marketplace metadata lives in `.agents/plugins/marketplace.json` and points at `./plugin`; Codex MCP wiring lives in `plugin/.mcp.json`, should keep `--draft-safe`, and should launch via `cwd: "."` + `./start_mcp.sh` unless a fresh `bash tools/gates/validate-codex-plugin.sh` runtime smoke proves a different Codex contract. Before shipping, run `bash tools/gates/dev-check.sh release`; the gate enforces fatal `ruff check`, `ruff format --check`, and `mypy --strict` for `plugin/apple_mail_mcp/`, then exact plugin zip/MCPB payloads, byte parity between `apple-mail-plugin.zip` and `apple-mail.plugin`, package deps/packages, install contracts, source syntax, and artifact freshness. After a signed source tag is pushed, run `bash tools/gates/marketplace-handoff.sh vX.Y.Z`; it verifies the source handoff and prints the one Marketplace preparation command. Do not add new lint/type tools without asking.
 
+**A merged branch is not a released version.** If the change carries a version
+bump, closing out means merge → tag → GitHub Release, and the order is load
+bearing: the release gate's stamp binds HEAD's *commit SHA*, not its tree, so a
+merge commit invalidates a stamp taken on the feature branch even though the
+tree is identical. Run `bash tools/gates/source-release-gate.sh` **after** the
+merge, on `main`, then `bash tools/gates/create-release-tag.sh` (no flags
+previews without signing), then `--confirm-create`, then push the tag. Signing
+needs `user.signingkey` set *and* the key loaded in `ssh-agent`; the key is
+machine-local and does not travel. Preflight demands a checkout clean of
+untracked **and gitignored** files — `validate_repo_root.py` scans the
+filesystem, and a stray root `uv.lock` (written by any `uv run` whose cwd is
+inside this tree) fails it despite being gitignored. Attach all three artifacts
+to the Release; only the `.zip` is tracked in git. Full procedure:
+[`.agents/skills/finalize-apple-mail-mcp/SKILL.md`](.agents/skills/finalize-apple-mail-mcp/SKILL.md)
+§ 10.
+
 ## Related folders
 
 `plugin/apple_mail_mcp/` (source of truth) · `plugin/` (shared Claude Code, Codex, and Cursor plugin runtime) · `.claude-plugin/` (Claude Code marketplace) · `.agents/plugins/` (Codex marketplace) · `apple-mail-mcpb/` · `tests/` · `tools/` · `docs/` · `tasks/`

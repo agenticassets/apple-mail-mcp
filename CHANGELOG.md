@@ -292,6 +292,22 @@ and a new source lint (`tests/cross_cutting/test_applescript_handler_names.py`)
 catches AppleScript handlers whose `end` name does not match their `on` name,
 which `osacompile` accepts and silently rewrites, so no compile gate can see it.
 
+### Closeout now requires the tag, not just the push (2026-08-25)
+
+`v3.12.0` sat merged but untagged across four PRs because every context file
+treated "pushed" as the end of a change. The `finalize-apple-mail-mcp` skill
+gains a required step 10 covering merge, signed tag, and GitHub Release, and
+both root hubs carry a short form of it.
+
+It records the three things that fail late: the release gate's stamp binds
+HEAD's *commit SHA* rather than its tree, so a merge commit invalidates a stamp
+taken on the feature branch and the gate must be re-run **after** the merge;
+signing needs `user.signingkey` set *and* the key loaded in `ssh-agent`, which
+is machine-local and does not travel; and preflight demands a checkout clean of
+untracked **and gitignored** files, since `validate_repo_root.py` scans the
+filesystem — a stray root `uv.lock`, written by any `uv run` whose working
+directory sits inside this tree, fails it while `git status` stays silent.
+
 ### Documentation and skills accuracy sweep (2026-08-25)
 
 No runtime behavior changed. Every `CLAUDE.md` hub, guide, and skill in the

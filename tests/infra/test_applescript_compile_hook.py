@@ -211,6 +211,30 @@ def test_formerly_ledgered_modules_still_compile_a_script() -> None:
         assert "compiled 0 " not in line, line
 
 
+def test_export_override_still_selects_the_script_export_builds_itself() -> None:
+    """Pin the three coordinated values, because substitution is silent.
+
+    ``export_emails`` builds exactly one script inline; every other scope
+    delegates to a ``*_script`` builder in ``export_helpers.py`` that is
+    compiled directly there. Loosen any of these three and the hook still
+    compiles *a* script — a helper one, already covered — so the test above
+    keeps reporting ``compiled 1 script(s)`` while the inline script silently
+    stops being checked. The count cannot see the difference; only the
+    arguments that select the path can.
+    """
+    hook = _load_hook_module()
+    override = hook.FUNCTION_KWARG_OVERRIDES["export_emails"]
+    # Any other scope hands the work to export_helpers.
+    assert override["scope"] == "single_email"
+    # A non-None list short-circuits into the id-export path before the
+    # single_email branch is reached.
+    assert override["message_ids"] is None
+    # include_attachments defaults to True under synthesis, and every format
+    # but "eml" refuses it — "eml" is also the variant that splices in the
+    # attachment-bundle blocks.
+    assert override["format"] == "eml"
+
+
 # --------------------------------------------------------------------------
 # The harness can fail: synthetic package, deliberately broken scripts
 # --------------------------------------------------------------------------

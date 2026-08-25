@@ -101,11 +101,22 @@ def forward_marker_finalize_script(marker: str, proof_script: str) -> str:
     pre-save snapshot, then a unique exact ``fwdSubject`` row.
     """
     marker_scan = standalone_exact_marker_draft_scan(marker, list_var="leakedForwardMarkerDrafts")
-    subject_scan = standalone_exact_subject_expr_draft_scan("fwdSubject", list_var="markedForwardDrafts")
+    subject_scan = standalone_exact_subject_expr_draft_scan(
+        "fwdSubject",
+        list_var="markedForwardDrafts",
+        exclude_ids_var="preSaveForwardDraftIds",
+    )
     bind_id = _bind_marked_draft_by_saved_id_fragment("markedForwardDraft")
     return f"""
         set forwardAttachmentProof to "identity_unavailable"
         set markedForwardDraft to missing value
+        -- Drafts ids that existed before this forward saved anything. "Fwd: <subject>"
+        -- is exactly what a previous forward of the same message leaves behind, so
+        -- the subject bind must never be able to select one of these rows.
+        -- ``fullDraftRfcSnapshot`` returns either ``missing value`` or a 3-item
+        -- list, so the guard is the whole check; no ``try`` needed.
+        set preSaveForwardDraftIds to {{}}
+        if preSaveDraftSnapshot is not missing value then set preSaveForwardDraftIds to item 3 of preSaveDraftSnapshot
         try
             if draftsMailbox is not missing value then
                 {marker_scan}
@@ -124,6 +135,13 @@ def forward_marker_finalize_script(marker: str, proof_script: str) -> str:
             end if
             if forwardAttachmentProof is not "verified" then error "FORWARD_ATTACHMENT_PROOF_FAILED: " & forwardAttachmentProof
         on error errMsg
+            -- Only delete a row whose identity this operation actually proved.
+            -- "operation_exact_subject" means the row merely had the right
+            -- subject; that is a locator, not evidence we created it, so a
+            -- delete there can destroy a draft the user wrote on the same
+            -- thread. Release the binding first so the fallback cannot act on
+            -- it either, and leave the row alone.
+            if savedDraftIdSource is "operation_exact_subject" then set markedForwardDraft to missing value
             try
                 delete markedForwardDraft
             on error

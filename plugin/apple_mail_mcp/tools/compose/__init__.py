@@ -94,18 +94,21 @@ from apple_mail_mcp.tools.compose.reply_runner import (
     _delete_reply_artifact,
     _native_reply_abort_response,
     _native_reply_effective_timeout,
+    _unrecognized_reply_output_response,
 )
-from apple_mail_mcp.tools.compose.reply_scripts import (
-    _build_reply_native_window_applescript,
-    _build_reply_objectmodel_applescript,
-    _native_reply_post_action,
-    _native_reply_subject_helpers_applescript,
+from apple_mail_mcp.tools.compose.reply_script_helpers import (
     _reply_command_options,
     _reply_extra_output_lines,
     _reply_mode_plan,
     _reply_signature_script,
     _ReplyModePlan,
 )
+from apple_mail_mcp.tools.compose.reply_scripts import (
+    _build_reply_native_window_applescript,
+    _build_reply_objectmodel_applescript,
+    _native_reply_post_action,
+)
+from apple_mail_mcp.tools.compose.reply_subject_scripts import native_reply_subject_helpers_applescript
 from apple_mail_mcp.tools.compose.rich_draft import create_rich_email_draft
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_forward_draft, _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.send import _send_html_email, compose_email
@@ -181,7 +184,7 @@ __all__ = [
     "_native_reply_abort_response",
     "_native_reply_effective_timeout",
     "_native_reply_post_action",
-    "_native_reply_subject_helpers_applescript",
+    "native_reply_subject_helpers_applescript",
     "_parse_expected_attachments",
     "_prepare_rich_bodies",
     "_reply_attachment_details_requested",
@@ -206,6 +209,7 @@ __all__ = [
     "_split_csv_addresses",
     "_standalone_compose_thread_warning",
     "_strip_cdata_wrappers",
+    "_unrecognized_reply_output_response",
     "_validate_attachment_paths",
     "_validate_from_address",
     "_validate_signature_name",

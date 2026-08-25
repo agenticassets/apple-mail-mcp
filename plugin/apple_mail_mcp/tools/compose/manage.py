@@ -171,6 +171,18 @@ def manage_drafts(
     elif action == "find":
         if not in_reply_to:
             return "Error: 'in_reply_to' is required for manage_drafts(action='find')"
+        # The script matches on `contains <value>` after stripping angle
+        # brackets and spaces, and AppleScript's `contains ""` is false for
+        # every string -- so "<>" or "   " survives the truthiness check above
+        # and then matches no draft at all. The caller asked "does a reply
+        # draft already exist for this message?" and would read that as a
+        # confident no, whose usual next step is composing a duplicate. The
+        # sibling delete path already refuses the same degenerate value.
+        if not in_reply_to.strip("<> "):
+            return (
+                "Error: 'in_reply_to' must contain a Message-ID, not just angle brackets or whitespace. "
+                "No drafts were searched."
+            )
         script = _build_manage_drafts_find_script(
             safe_account=safe_account,
             list_limit=list_limit,

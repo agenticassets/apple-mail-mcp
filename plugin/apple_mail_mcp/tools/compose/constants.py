@@ -16,6 +16,14 @@ MESSAGE_LOOKUP_CAP = SCAN_BOUNDS["MESSAGE_LOOKUP"]
 _MESSAGE_ID_REQUIRED_ERROR = (
     "Error: message_id is required (discover via search_emails(...) or list_inbox_emails(...), then pass message_id)"
 )
+# Sentinel the native reply script returns when the source message has no
+# readable content to cut a quote anchor from, so the two-part quote proof
+# (attribution line + a span of the source body) could never be evaluated.
+# Shared with the Python side, which turns it into a structured error under
+# output_format="json"; the emitting AppleScript and the reader must agree on
+# the exact token.
+QUOTE_PROOF_UNAVAILABLE: Final[str] = "QUOTE_PROOF_UNAVAILABLE"
+
 # Maximum number of Mail compose windows that may be open simultaneously when
 # mode="open" is used. Each call in mode="open" leaves a window open; at high
 # counts NSWindowServer OOMs. Agents doing bulk drafting must use mode="draft".

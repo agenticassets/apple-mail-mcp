@@ -560,7 +560,25 @@ def test_standalone_draft_identity_falls_back_only_to_one_new_numeric_drafts_id_
     assert 'if afterCount is not (beforeCount + 1) or afterCount > draftCap then return {"", ""}' in handlers
     assert "if (count of numericCandidateIds) is 1 then" in handlers
     assert 'return {(item 1 of numericCandidateIds as string), "numeric_snapshot"}' in handlers
-    assert "delay 0.8" in resolver
+    # Settlement patience is spent lazily: probe first, then wait only while the
+    # row is still missing. The 0.8/0.5/0.5 backoff keeps the same 1.8s deadline
+    # and the same final probe as the old unconditional ``delay 0.8`` lead-in, so
+    # an iCloud row that needs settling still gets every chance it had before --
+    # but a local or Exchange save, where the row is already indexed when ``save``
+    # returns, now pays nothing. Reintroducing a bare delay ahead of the loop is
+    # the regression this guards.
+    assert "set identityBackoff to {0.8, 0.5, 0.5}" in resolver
+    assert "repeat with identityAttempt from 1 to 4" in resolver
+    assert "if identityAttempt is less than 4 then delay (item identityAttempt of identityBackoff)" in resolver
+    first_probe = resolver.index("set savedDraftIdentity to my persistedStandaloneDraftId")
+    lead_in = [
+        line.strip()
+        for line in resolver[:first_probe].splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    assert not any(line.startswith("delay") for line in lead_in), (
+        f"no settlement delay may run before the first probe, found: {lead_in}"
+    )
     assert "set savedDraftIdSource to item 2 of savedDraftIdentity" in resolver
 
 

@@ -112,14 +112,21 @@ def standalone_draft_identity_resolver_script() -> str:
             set savedDraftIdSource to ""
             try
                 if preSaveDraftSnapshot is not missing value and draftsMailbox is not missing value then
-                    -- iCloud may index the saved Drafts row after ``save`` returns.
-                    delay 0.8
-                    repeat with identityAttempt from 1 to 3
+                    -- iCloud may index the saved Drafts row after ``save`` returns, so
+                    -- the resolver still spends the same 1.8s of total patience it
+                    -- always did. It just probes BEFORE spending any of it. The old
+                    -- shape paid an unconditional ``delay 0.8`` first, which every
+                    -- local and Exchange save -- where the row is already there when
+                    -- ``save`` returns -- burned for nothing. Probing at 0.0s, 0.8s,
+                    -- 1.3s, 1.8s is a strict superset of the previous 0.8s, 1.3s,
+                    -- 1.8s: same last probe, same deadline, one extra early chance.
+                    set identityBackoff to {{0.8, 0.5, 0.5}}
+                    repeat with identityAttempt from 1 to 4
                         set savedDraftIdentity to my persistedStandaloneDraftId(draftsMailbox, preSaveDraftSnapshot, {DRAFT_LIST_CAP})
                         set savedDraftId to item 1 of savedDraftIdentity as string
                         set savedDraftIdSource to item 2 of savedDraftIdentity as string
                         if savedDraftId is not "" then exit repeat
-                        if identityAttempt is less than 3 then delay 0.5
+                        if identityAttempt is less than 4 then delay (item identityAttempt of identityBackoff)
                     end repeat
                 end if
             on error
@@ -148,21 +155,59 @@ def _bounded_draft_candidate_messages_fragment() -> str:
 """
 
 
-def _exact_subject_expr_draft_scan_fragment(subject_expr: str, list_var: str = "markedDrafts") -> str:
+def _exact_subject_expr_draft_scan_fragment(
+    subject_expr: str,
+    list_var: str = "markedDrafts",
+    *,
+    exclude_ids_var: str = "",
+) -> str:
     """Head+tail bounded exact-subject scan copied from ``_build_draft_lookup``.
 
     ``subject_expr`` is an AppleScript expression such as ``"literal"`` or
     ``fwdSubject``. Callers must require ``(count of list_var) is 1`` before
     mutating. Uses ``contents of`` when collecting list-item references so
     later mutations bind the message, not a dangling iterator.
+
+    ``exclude_ids_var`` names an AppleScript list of numeric Drafts ids that
+    existed BEFORE this operation saved anything; rows in it are skipped. Subject
+    equality alone does not prove we created a row: "Fwd: <subject>" is exactly
+    what a previous forward of the same message left in Drafts. While the newly
+    saved row is still unindexed, an unfiltered scan sees only the OLD draft,
+    binds it, fails the attachment proof against it, and — on the forward error
+    path — deletes a message the caller never named. Pass the pre-save id list
+    wherever one exists so a pre-existing row can never be the unique match.
     """
     candidates = _bounded_draft_candidate_messages_fragment()
+    if exclude_ids_var:
+        exclusion_setup = f"""
+                        set excludedDraftIds to {exclude_ids_var}"""
+        # No leading newline: the caller splices this after a line of its own so
+        # ``try`` stays alone on its source line, which is what the bare-``try``
+        # lint in tests/core/test_no_bare_applescript_try.py matches on.
+        exclusion_guard = """\
+                                -- Unguarded on purpose: the enclosing per-candidate
+                                -- handler skips a row whose id will not read, and a row
+                                -- we cannot identify must never become the unique match.
+                                set candidateDraftIdText to (id of candidateDraft) as string
+                                set candidateExistedBefore to false
+                                repeat with priorDraftId in excludedDraftIds
+                                    if (contents of priorDraftId as string) is candidateDraftIdText then
+                                        set candidateExistedBefore to true
+                                        exit repeat
+                                    end if
+                                end repeat
+                                if candidateExistedBefore is false and (subject of candidateDraft as string) is {subject_expr} then"""
+    else:
+        exclusion_setup = ""
+        exclusion_guard = """\
+                                if (subject of candidateDraft as string) is {subject_expr} then"""
+    subject_test = exclusion_guard.format(subject_expr=subject_expr)
     return f"""
-{candidates}
+{candidates}{exclusion_setup}
                         set {list_var} to {{}}
                         repeat with candidateDraft in candidateMessages
                             try
-                                if (subject of candidateDraft as string) is {subject_expr} then
+{subject_test}
                                     set end of {list_var} to contents of candidateDraft
                                 end if
                             end try
@@ -226,9 +271,14 @@ def standalone_exact_marker_draft_scan(marker: str, *, list_var: str = "markedDr
     return _exact_marker_draft_scan_fragment(escape_applescript(marker), list_var)
 
 
-def standalone_exact_subject_expr_draft_scan(subject_expr: str, *, list_var: str = "markedDrafts") -> str:
+def standalone_exact_subject_expr_draft_scan(
+    subject_expr: str,
+    *,
+    list_var: str = "markedDrafts",
+    exclude_ids_var: str = "",
+) -> str:
     """Public exact-subject scan; ``subject_expr`` is an AppleScript expression."""
-    return _exact_subject_expr_draft_scan_fragment(subject_expr, list_var)
+    return _exact_subject_expr_draft_scan_fragment(subject_expr, list_var, exclude_ids_var=exclude_ids_var)
 
 
 def _delete_if_still_exact_marker(safe_marker: str) -> str:

@@ -4,10 +4,14 @@
 
 ## 3.12.0 - 2026-08-24
 
-Directory-listing release. No tool behavior changed; every item below is
-metadata, documentation, or a validator that a vendor plugin-directory reviewer
-(Claude plugin directory, Claude Desktop extension directory, Cursor
-Marketplace) checks before admitting a plugin.
+Two lanes. The first is the directory listing work: metadata, documentation,
+and validators that a vendor plugin-directory reviewer (Claude plugin
+directory, Claude Desktop extension directory, Cursor Marketplace) checks
+before admitting a plugin. The second is an adversarial review of the drafting
+surface, weighted toward the native reply path, which did change tool
+behavior — see **Drafting hardening** below.
+
+### Directory listings
 
 - **Every tool now carries a human-readable `title`.** Host plugin browsers and
   directory reviewers show `title` beside the tool name; the 41 tools had only
@@ -33,6 +37,117 @@ Marketplace) checks before admitting a plugin.
   privacy-policy URL and a support channel; the MCPB manifest and the bundle
   README point at these files. Cowork and MCPB install steps in the README now
   link the latest GitHub Release instead of a local build.
+
+### Drafting hardening
+
+Adversarial review of the compose surface, weighted toward
+`reply_to_email(native_format=True)`. The recurring shape is the one v3.11.8
+chased: a check that could not fail, a locator mistaken for evidence, or a
+failure reported as prose to a caller parsing JSON.
+
+- **The native reply identity capsule parser rejected every valid capsule.**
+  The capsule is four pipe-separated fields whose fourth names the evidence
+  class; the parser instead required that fourth field to be literally
+  `transaction`, which threw out every `rfc` capsule (the strong one) and every
+  `transaction` capsule from a source message that had a Message-ID. The
+  practical effect was that `reply_to_email` came back with no exact Drafts id
+  on essentially every native reply: `exact_id_verified` was always false,
+  attachment-bearing replies failed with `IDENTITY_UNAVAILABLE` despite a
+  correctly saved draft, and the delete-and-retype retry was unreachable. The
+  emitter and parser are now round-tripped by
+  `tests/compose/test_native_reply_identity_capsule.py`.
+- **The quote proof was one-sided.** Verification looked for Mail's attribution
+  line and nothing else, so it could not distinguish "the quoted original
+  survived" from "Mail kept the header and lost the quote" — and an attribution
+  line can occur in an authored body or a signature. Both halves must now land
+  in the same region after the reply body: the attribution line, plus a span of
+  the source message.
+- **Two error paths named a Drafts artifact as a delete target without
+  proving it was ours.** `REPLY_BODY_MISMATCH` published the suspected artifact
+  as `draft_id` under an instruction to delete it, ignoring the
+  `artifact_identity_verified` flag its sibling error builder already gates on.
+  All five native-reply abort paths (`TYPING_INTERRUPTED`, sender-override
+  refusal, and the three guard aborts) shared a cleanup string offering the
+  same delete, on paths where identity can never be established: the probe
+  searches by reply subject with no draft id to match against, and a reply
+  subject is `Re: <thread>`, which a reply draft the user wrote earlier in that
+  same thread also carries. Every one of those errors has already reported that
+  nothing was saved. Both now report the id for inspection only, say why, and
+  the verified branch steers to the guarded
+  `manage_drafts(action='delete', ..., expected_in_reply_to=..., expected_subject=..., expected_to=...)`
+  form so Mail re-checks identity at delete time. `pre-draft-verification.md`
+  was telling agents to delete unconditionally and is updated to match.
+- **Forward's subject bind could select a previous forward's draft.**
+  `Fwd: <subject>` is exactly what an earlier forward of the same message
+  leaves in Drafts. The bind now excludes ids present before this call saved
+  anything, and the cleanup path refuses to delete a row bound only by subject
+  (`operation_exact_subject` is a locator, not evidence).
+- **HTML compose destroyed a non-text clipboard.** The snapshot read only
+  `NSPasteboardTypeString` and skipped the restore entirely when that came back
+  `missing value` — which is what a copied image, a Finder file copy, or
+  RTF-only content returns. The user's clipboard was replaced by the tool's
+  HTML and never given back, and a pasteboard has no undo. Every item and every
+  flavor is now snapshotted as detached `NSPasteboardItem`s and written back,
+  from one module shared by the success path and the error handler.
+- **`manage_drafts(action='find', in_reply_to='<>')` reported a confident "no
+  draft".** The value passed the truthiness check, then matched nothing because
+  AppleScript's `contains ""` is false for every string. The caller asked
+  whether a reply draft already existed and would read the empty result as no,
+  whose usual next step is composing a duplicate. It is now refused up front,
+  matching the sibling delete path.
+- **`forward_email` raised a transport exception on the common call.** The
+  handler re-raised whenever `message` was falsy, but `message` is the optional
+  lead-in text above the forwarded mail, not a marker of progress — so the
+  plain `forward_email(message_id=..., to=...)` crashed while adding a lead-in
+  returned a readable error. `compose_email` and `reply_to_email` both return
+  unconditionally.
+- **`~typo/report.pdf` escaped the attachment validator as an exception.**
+  Path expansion ran before validation, so `expanduser` raised `RuntimeError`
+  out of a helper whose contract is `(paths, error)`. Validation now runs
+  first, on the raw path.
+- **Non-success reply exits reached JSON callers as prose.**
+  `reply_to_email(output_format="json")` documents a JSON contract, but the
+  compose script's failure exits are plain text, so a genuine failure arrived
+  at an agent as a `json.loads` error and the parsed `code` it was meant to
+  branch on never existed. Three codes now cover them: `REPLY_NOT_COMPLETED`
+  (catch-all, with Mail's own text preserved under
+  `remediation.script_output`), `QUOTE_PROOF_UNAVAILABLE` (source message has
+  no readable content to anchor the proof), and `REPLY_WINDOW_NOT_IDENTIFIED`
+  (the compose window could not be told apart from windows already open, so
+  nothing was typed).
+
+Performance, with behavior held fixed:
+
+- **The reply body editor is resolved once per reply, not once per chunk.**
+  Resolution walks `entire contents of targetWindow`, materializing the compose
+  window's whole Accessibility subtree over Apple Events; at 80 characters per
+  chunk a 1,600-character body paid twenty of those walks. The reference is now
+  carried across the loop and each chunk pays a single `AXFocused` read, with a
+  re-resolve before aborting. Nothing is verified less: the per-chunk guard
+  still re-proves window identity and editor focus before the first keystroke.
+- **The body verdict is decided before attachments and signatures are probed.**
+  Only two of the four verdict rows emit those values, so every draft that is
+  not ours — most of the bounded Drafts window on the same-subject fallback
+  scan — paid three walks of `mail attachments` (each reading `file size`) plus
+  a full signature normalization, then discarded all of it. The saved-draft
+  verifier polls up to twenty times, so that was paid per draft per attempt
+  while holding the cross-process Mail lock.
+- **The Drafts resolver probes before spending its patience.** It kept the same
+  1.8s total budget but paid an unconditional `delay 0.8` first, which every
+  reply paid whether or not iCloud had already indexed the row.
+
+Also: clicking the reply editor is now confined to the initial resolution while
+the body is still empty (`click` seats the caret where it lands, so clicking
+mid-body would splice later chunks into the middle of the text already typed
+and still report success); `verify_draft` detects the quote boundary through a
+shared earliest-quote-offset handler instead of two hardcoded needles; the
+reply Drafts resolver returns a fixed arity on every branch and signals "no
+identity" with `missing value` rather than `""`, which is also a legal draft-id
+value inside that handler; `reply_scripts.py` split its pure mode/option
+helpers into `reply_script_helpers.py` to stay under the module line budget;
+and a new source lint (`tests/cross_cutting/test_applescript_handler_names.py`)
+catches AppleScript handlers whose `end` name does not match their `on` name,
+which `osacompile` accepts and silently rewrites, so no compile gate can see it.
 
 ## 3.11.9 - 2026-08-22
 

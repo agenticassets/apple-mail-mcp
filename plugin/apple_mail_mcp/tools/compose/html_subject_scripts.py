@@ -14,6 +14,7 @@ from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
 from apple_mail_mcp.core import AppleScriptTimeout, escape_applescript
 from apple_mail_mcp.core.reply_state import drafts_mailbox_block
 from apple_mail_mcp.tools import compose
+from apple_mail_mcp.tools.compose.clipboard_scripts import pasteboard_restore_script
 from apple_mail_mcp.tools.compose.helpers import _clean_applescript_error
 from apple_mail_mcp.tools.compose.standalone_draft_identity_scripts import (
     standalone_exact_marker_restore_or_delete_script,
@@ -139,12 +140,7 @@ def html_compose_error_handler_script(
     try
         do shell script "rm -f " & quoted form of "{html_temp_path}"
     end try
-    if oldClip is not missing value then
-        try
-            pb's clearContents()
-            pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-        end try
-    end if
+    {pasteboard_restore_script()}
     error errMsg
 """
 

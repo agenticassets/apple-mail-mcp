@@ -60,7 +60,9 @@ def _assert_full_body_verifier_shape(testcase, verifier_script):
     """
     testcase.assertIn('set fullReplyBody to do shell script "cat "', verifier_script)
     testcase.assertIn("on flattenForCompare(theText)", verifier_script)
-    testcase.assertIn("on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)", verifier_script)
+    testcase.assertIn(
+        "on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)", verifier_script
+    )
     testcase.assertIn("considering case", verifier_script)
     testcase.assertNotIn("set replyBodyNeedle to", verifier_script)
 
@@ -109,7 +111,10 @@ def _saved_reply_draft_output(
     quote_needle=None,
 ):
     if draft_id is not None and draft_identity is None:
-        draft_identity = f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>"
+        # Four fields, evidence last — the exact shape reply_scripts.py emits.
+        # A three-field fixture passed here for months against a parser that
+        # rejected every real capsule; see test_native_reply_identity_capsule.py.
+        draft_identity = f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc"
     lines = [
         "SAVING REPLY AS DRAFT",
         "",
@@ -1107,10 +1112,16 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         # title equality against the adopted replySubject.
         self.assertIn("on stripReplySubjectPrefixes(rawSubject)", script)
         self.assertIn("on subjectCoresMatch(leftSubject, rightSubject)", script)
+        # An empty SE title is a real answer (compose windows report one); a
+        # System Events call that never answered at all is not. The old form
+        # accepted the "(unset)" sentinel, so a missing Accessibility grant read
+        # as agreement from a probe that had not run.
         self.assertIn(
-            'set seOk to (guardSE is replySubject or guardSE is "" or guardSE is "(unset)")',
+            'set seOk to (guardSEAnswered and (guardSE is replySubject or guardSE is ""))',
             script,
         )
+        self.assertNotIn('guardSE is "(unset)"', script)
+        self.assertIn("on error systemEventsErrMsg", script)
         self.assertIn("set replySubject to mailWindowTitle", script)
         self.assertIn("set mailOk to (guardMail is replySubject and guardMailWindowId is replyWindowId)", script)
         # Native default never pins the account alias (that drops the logo signature).
@@ -1654,7 +1665,9 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertIn("messages 1 thru headEnd of draftsMailbox", verifier_script)
         _assert_full_body_verifier_shape(self, verifier_script)
         self.assertIn('if "Re: Test" is "" or draftSubject is "Re: Test" then', verifier_script)
-        self.assertIn("my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)", verifier_script)
+        self.assertIn(
+            "my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)", verifier_script
+        )
         self.assertIn('return "BODY_MISSING|" & bodyMissingDraftId', verifier_script)
 
     def test_native_reply_scripts_capture_saved_draft_id_only_for_draft_and_open(self):
@@ -1697,11 +1710,11 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                     self.assertIn("set preSaveDraftSnapshot to my fullDraftRfcSnapshot(draftsMailbox, 75)", script)
                     self.assertIn("set candidateDraftId to id of aDraft as string", script)
                     self.assertIn("if my headerHasExactRfcToken(item 2 of inReplyToResult, sourceMessageId)", script)
-                    self.assertIn('if (count of newDraftIdentities) is not 1 then return ""', script)
+                    self.assertIn('if (count of newDraftIdentities) is not 1 then return missing value', script)
                     self.assertIn(
                         'if candidateRfcMessageId is "" then return {candidateDraftId, "", "", "transaction"}', script
                     )
-                    self.assertIn('if postSaveDraftCount is not (preSaveDraftCount + 1) then return ""', script)
+                    self.assertIn('if postSaveDraftCount is not (preSaveDraftCount + 1) then return missing value', script)
                     self.assertIn("if totalDrafts > draftCap then return missing value", script)
                     self.assertIn("repeat with identityAttempt from 1 to 3", script)
                     self.assertNotIn("set replyDraftId to id of replyMessage as string", script)
@@ -2514,7 +2527,12 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertEqual(payload["code"], "REPLY_WINDOW_FOCUS_FAILED")
         self.assertEqual(payload["remediation"]["draft_artifact_status"], "body_missing")
         self.assertEqual(payload["remediation"]["suspected_draft_id"], "116814")
-        self.assertIn("manage_drafts(action='delete', draft_id=...)", payload["remediation"]["cleanup"])
+        # Reported for inspection, not offered as a delete target: the probe
+        # finds it by reply subject with no draft id to match against, so it can
+        # just as easily be a draft the user wrote in this thread earlier. Full
+        # contract in tests/compose/test_reply_abort_cleanup_authorization.py.
+        self.assertIn("verify_draft(draft_id=...)", payload["remediation"]["cleanup"])
+        self.assertNotIn("manage_drafts(action='delete'", payload["remediation"]["cleanup"])
 
     def test_native_reply_subject_guard_mismatch_returns_distinct_error(self):
         # When Mail opens a reply-looking window whose title still fails the subject
@@ -2729,7 +2747,10 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
             )
 
         script = _main_reply_script(captured)
-        self.assertIn("on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId)", script)
+        self.assertIn(
+            "on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId, preResolvedEditor)",
+            script,
+        )
         self.assertIn(f"set chunkEnd to chunkStart + {compose_tools.TYPING_CHUNK_SIZE} - 1", script)
         self.assertIn(f"delay {compose_tools.TYPING_INTER_CHUNK_DELAY}", script)
         self.assertIn("key up shift", script)
@@ -2786,7 +2807,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id=draft_id,
-                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>",
+                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|91061"
@@ -2831,7 +2852,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id=draft_id,
-                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>",
+                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|91061"
@@ -2869,7 +2890,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         def fake_run(script, timeout=120):
             if "reply foundMessage" in script:
                 compose_calls["count"] += 1
-                self.assertIn('if (count of newDraftIdentities) is not 1 then return ""', script)
+                self.assertIn('if (count of newDraftIdentities) is not 1 then return missing value', script)
                 self.assertIn("if my headerHasExactRfcToken(item 2 of inReplyToResult, sourceMessageId)", script)
                 return _saved_reply_draft_output(to="native reply recipients")
             if 'set targetDraftIdText to ""' in script:
@@ -2907,7 +2928,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id="91061",
-                    draft_identity="91061|||<draft-91061@example.com>|||<source@example.com>",
+                    draft_identity="91061|||<draft-91061@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|55555"
@@ -2927,7 +2948,13 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
 
         payload = json.loads(result)
         self.assertEqual(payload["code"], "REPLY_BODY_MISMATCH")
-        self.assertEqual(payload["remediation"]["artifact_message_id"], "55555")
+        # The id is reported as a suspect, not as a delete target. The retry
+        # logic above refuses to delete 55555 because it cannot prove it created
+        # it; the remediation must not then hand the same id to the agent as
+        # `draft_id` with instructions to delete it.
+        self.assertEqual(payload["remediation"]["suspect_artifact_message_id"], "55555")
+        self.assertNotIn("draft_id", payload["remediation"])
+        self.assertFalse(payload["remediation"]["artifact_identity_verified"])
         self.assertFalse(payload["remediation"]["retyped"])
         self.assertEqual(compose_calls["count"], 1)
 
@@ -4320,7 +4347,12 @@ class ComposeRunApplescriptMigrationTests(unittest.TestCase):
             captured["script"],
         )
         self.assertIn("close (window of newMsg) saving no", captured["script"])
-        self.assertGreater(captured["script"].count("pb's setString:oldClip"), 1)
+        # The clipboard goes back on the success path AND the error path. It is
+        # restored by writing back every saved item, not just the text flavor:
+        # reading only `stringForType:` returned missing value for a copied
+        # image or file and skipped the restore altogether, destroying the copy.
+        self.assertIn("pb's pasteboardItems()", captured["script"])
+        self.assertGreater(captured["script"].count("pb's writeObjects:savedPasteboardItems"), 1)
         self.assertNotIn('keystroke "s" using command down', captured["script"])
         self.assertNotIn("close window 1 saving yes", captured["script"])
         self.assertIn("Email saved as draft (HTML)", result)

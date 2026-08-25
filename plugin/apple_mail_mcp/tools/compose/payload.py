@@ -205,17 +205,21 @@ def _validate_attachment_paths(attachments: str) -> tuple[list[str], str | None]
         if not raw_path:
             continue
 
-        # Expand tilde and resolve symlinks
-        resolved_path = Path(raw_path).expanduser().resolve()
-        resolved = str(resolved_path)
-
+        # Validate before expanding. `validate_save_path` expands inside its own
+        # guard; doing it here first means `~typo/report.pdf` raises RuntimeError
+        # out of `expanduser` and leaves this helper as an exception, breaking
+        # the (paths, error) contract every other failure here honors.
         path_err = validate_save_path(
-            resolved,
+            raw_path,
             path_label="Attachment path",
             sensitive_action="attach files from",
         )
         if path_err:
             return [], path_err
+
+        # Expand tilde and resolve symlinks
+        resolved_path = Path(raw_path).expanduser().resolve()
+        resolved = str(resolved_path)
 
         # File must exist
         if not resolved_path.is_file():

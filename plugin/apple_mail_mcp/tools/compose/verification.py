@@ -362,24 +362,61 @@ def _reply_body_mismatch_error(
     ``_reply_verification_failure_response`` for the dispatch that keeps
     ``not_found`` / ``verification_timeout`` / ``applescript_error`` /
     ``body_after_quote`` on ``_reply_draft_verification_error`` instead.
+
+    Names the artifact as deletable only when
+    ``artifact_identity_verified`` -- the same gate
+    ``_reply_draft_verification_error`` applies to its own statuses.
     """
     artifact_id = verification.body_missing_artifact_id or verification.matched_artifact_id
+    identity_verified = verification.artifact_identity_verified
     remediation: dict[str, Any] = {
-        "artifact_message_id": artifact_id,
-        "draft_id": artifact_id,
         "mailbox": "Drafts",
         "verification_status": verification.status,
+        "artifact_identity_verified": identity_verified,
         "retyped": retyped,
-        "preferred": (
-            "Inspect the draft with verify_draft(draft_id=...). If the body is truncated or in the "
-            "wrong case, delete it with manage_drafts(action='delete', draft_id=...) and retry with "
-            "Mail visible and holding focus."
-        ),
-        "cleanup": (
-            "Delete the suspected artifact by exact Drafts id before retrying so a duplicate draft is not left behind."
-        ),
         "expected_body_preview": _first_non_empty_line(reply_body),
     }
+    if identity_verified:
+        remediation.update(
+            {
+                "artifact_message_id": artifact_id,
+                "draft_id": artifact_id,
+                "preferred": (
+                    "Inspect the draft with verify_draft(draft_id=...). If the body is truncated or in the "
+                    "wrong case, delete it with manage_drafts(action='delete', draft_id=..., "
+                    "expected_in_reply_to=..., expected_subject=..., expected_to=...) and retry with "
+                    "Mail visible and holding focus."
+                ),
+                "cleanup": (
+                    "Delete the artifact by exact Drafts id before retrying so a duplicate draft is not left "
+                    "behind. Pass the guarded form's expected_in_reply_to, expected_subject, and expected_to "
+                    "together so Mail re-checks the row's identity at delete time."
+                ),
+            }
+        )
+    else:
+        # The id came from the bounded newest-Drafts fallback, not from the
+        # compose that just ran -- either Mail never handed back a draft id, or
+        # the verifier resolved a different row than the one it did hand back.
+        # This path used to publish it as `draft_id` under "delete it with
+        # manage_drafts(action='delete', draft_id=...)", which is the same
+        # deletion the retry logic upstream refuses for exactly this reason: it
+        # cannot prove it created that row. An agent following the instruction
+        # deletes whatever else is sitting in Drafts under a similar subject,
+        # and a deleted draft is user-authored text with no undo. The shipped
+        # skills already say a fallback-discovered draft is not cleanup
+        # authorization; this is the string that was overriding them at the
+        # point of use.
+        remediation.update(
+            {
+                "suspect_artifact_message_id": artifact_id,
+                "preferred": (
+                    "Inspect the suspected Drafts artifact with verify_draft(draft_id=...) and retry after "
+                    "Mail finishes saving. Do not delete it automatically because persisted reply identity "
+                    "was not verified."
+                ),
+            }
+        )
     if stale_artifact_id:
         remediation["stale_artifact_id"] = stale_artifact_id
         remediation["stale_artifact_warning"] = (
@@ -391,7 +428,8 @@ def _reply_body_mismatch_error(
         ToolError(
             code="REPLY_BODY_MISMATCH",
             message=(
-                f"Reply draft was {mode_text}, but the saved Drafts artifact "
+                f"Reply draft was {mode_text}, but the "
+                f"{'saved' if identity_verified else 'suspected'} Drafts artifact "
                 f"{artifact_id or '(id unavailable)'} does not contain the full reply body above the "
                 "quoted original when compared case-sensitively with whitespace and smart-punctuation "
                 "normalized. This indicates the typed body was truncated or miscased. No email was sent."

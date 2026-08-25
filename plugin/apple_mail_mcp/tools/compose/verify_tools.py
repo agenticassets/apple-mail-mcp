@@ -5,6 +5,8 @@ import json
 from typing import Any
 
 from apple_mail_mcp.applescript_snippets import (
+    body_above_quote_handler,
+    earliest_quote_offset_handler,
     recipient_addresses_block,
     sanitize_field_handler,
     text_offset_handler,
@@ -144,6 +146,8 @@ def verify_draft(
     effective_timeout = timeout if timeout is not None else 120
     sanitize_script = sanitize_field_handler(include_attachment_row_delimiter=True)
     text_offset_script = text_offset_handler()
+    earliest_quote_offset_script = earliest_quote_offset_handler()
+    body_above_quote_script = body_above_quote_handler()
     to_recipients_script = recipient_addresses_block(message_var="aDraft", recipient_kind="to", output_var="toRecips")
     cc_recipients_script = recipient_addresses_block(message_var="aDraft", recipient_kind="cc", output_var="ccRecips")
     bcc_recipients_script = recipient_addresses_block(
@@ -159,6 +163,10 @@ def verify_draft(
     {sanitize_script}
 
     {text_offset_script}
+
+    {earliest_quote_offset_script}
+
+    {body_above_quote_script}
 
     tell application "Mail"
         with timeout of {effective_timeout} seconds
@@ -185,15 +193,13 @@ def verify_draft(
 
                 {thread_headers_script}
 
+                set quoteOffset to my earliestQuoteOffset(draftBody)
                 set quotedOriginal to "false"
-                if (my textOffset(draftBody, " wrote:")) > 0 then set quotedOriginal to "true"
-                if (my textOffset(draftBody, "-----Original Message-----")) > 0 then set quotedOriginal to "true"
+                if quoteOffset > 0 then set quotedOriginal to "true"
 
                 set signatureDetected to "false"
                 try
-                    set quoteOffset to my textOffset(draftBody, " wrote:")
-                    set newBodyText to draftBody
-                    if quoteOffset > 1 then set newBodyText to text 1 thru (quoteOffset - 1) of draftBody
+                    set newBodyText to my bodyAboveQuote(draftBody, quoteOffset)
                     repeat with sig in signatures
                         set sigText to content of sig as string
                         if sigText is not "" and newBodyText contains sigText then set signatureDetected to "true"

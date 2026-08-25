@@ -37,13 +37,16 @@ from apple_mail_mcp.tools.compose.reply_runner import (
     _delete_reply_artifact,
     _native_reply_abort_response,
     _native_reply_effective_timeout,
+    _unrecognized_reply_output_response,
+)
+from apple_mail_mcp.tools.compose.reply_script_helpers import (
+    _reply_command_options,
+    _reply_mode_plan,
+    _reply_signature_script,
 )
 from apple_mail_mcp.tools.compose.reply_scripts import (
     _build_reply_native_window_applescript,
     _build_reply_objectmodel_applescript,
-    _reply_command_options,
-    _reply_mode_plan,
-    _reply_signature_script,
 )
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.verification import (
@@ -427,8 +430,10 @@ def reply_to_email(
         if abort_response is not None:
             return abort_response
 
-        if effective_mode not in ("draft", "open") or mode_plan.success_text not in current_result:
+        if effective_mode not in ("draft", "open"):
             return current_result
+        if mode_plan.success_text not in current_result:
+            return _unrecognized_reply_output_response(current_result, output_format=output_format)
 
         mode_text = "opened" if effective_mode == "open" else "created"
         reply_subject = _extract_output_field(current_result, "Subject")
@@ -439,6 +444,7 @@ def reply_to_email(
             else (None if native_format else _extract_output_field(current_result, "Draft ID"))
         )
         quoted_needle = _extract_output_field(current_result, "Quote Needle")
+        quote_anchor = _extract_output_field(current_result, "Quote Anchor")
         # The native window inherits Mail's own default reply signature (with logo),
         # whose rich text we never set and cannot reliably substring-match. Only
         # assert a signature when one was explicitly requested by name; otherwise
@@ -464,6 +470,7 @@ def reply_to_email(
                 draft_id=draft_id,
                 native_draft_identity=native_draft_identity,
                 quoted_needle=quoted_needle,
+                quote_anchor=quote_anchor,
                 expected_attachment_count=len(validated_paths) if validated_paths else None,
                 expected_attachment_names=[Path(path).name for path in validated_paths],
                 signature_requested=signature_requested_for_verify,
@@ -525,11 +532,12 @@ def reply_to_email(
             if retry_abort_response is not None:
                 return retry_abort_response
             if mode_plan.success_text not in current_result:
-                return current_result
+                return _unrecognized_reply_output_response(current_result, output_format=output_format)
             reply_subject = _extract_output_field(current_result, "Subject")
             native_draft_identity = native_reply_draft_identity_from_output(current_result)
             draft_id = native_draft_identity.draft_id if native_draft_identity else None
             quoted_needle = _extract_output_field(current_result, "Quote Needle")
+            quote_anchor = _extract_output_field(current_result, "Quote Anchor")
 
         assert verification is not None  # loop always runs at least once
         if output_format == "json":

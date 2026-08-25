@@ -14,6 +14,7 @@ from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
 from apple_mail_mcp.core import escape_applescript, normalize_message_ids
 from apple_mail_mcp.tools import compose
 from apple_mail_mcp.tools.compose.constants import (
+    QUOTE_PROOF_UNAVAILABLE,
     TYPING_CHUNK_SIZE,
     TYPING_INTER_CHUNK_DELAY,
     TYPING_PER_CHUNK_OVERHEAD_SECONDS,
@@ -168,9 +169,18 @@ def _probe_abort_artifact(
     return probe.status, suspected, guard_reply_subject, derived_reply_subject
 
 
+#: Inspect-only by construction. ``_probe_abort_artifact`` searches Drafts by
+#: reply subject with ``draft_id=None``, so the row it finds can never be
+#: identity-verified -- and the subject it searches on is "Re: <thread>", which
+#: is exactly what a reply draft the user wrote earlier in this same thread also
+#: carries. The probe cannot tell those apart, and every abort path that reports
+#: it has already said nothing was saved. This used to end "...or delete that
+#: exact Drafts artifact with ... manage_drafts(action='delete', draft_id=...)",
+#: which pointed an agent at a coin flip over user-authored text with no undo.
 _EXACT_ARTIFACT_CLEANUP = (
-    "If suspected_draft_id is present, inspect or delete that exact Drafts artifact "
-    "with verify_draft or manage_drafts(action='delete', draft_id=...)."
+    "If suspected_draft_id is present, inspect that Drafts artifact with "
+    "verify_draft(draft_id=...). Do not delete it automatically: it was found by "
+    "subject, not by verified reply identity, so it may be a draft you did not create."
 )
 
 
@@ -237,8 +247,10 @@ def _native_reply_abort_response(
                         suspected,
                         result,
                         cleanup=(
-                            "If suspected_draft_id is present, a stray artifact may still exist; inspect or "
-                            "delete it with verify_draft or manage_drafts(action='delete', draft_id=...)."
+                            "If suspected_draft_id is present, the discarded compose may have left a stray "
+                            "artifact; inspect it with verify_draft(draft_id=...). Do not delete it "
+                            "automatically: it was found by subject, not by verified reply identity, so it "
+                            "may be a draft you did not create."
                         ),
                     ),
                 },
@@ -278,6 +290,30 @@ def _native_reply_abort_response(
     artifact_status, suspected_artifact_id, guard_reply_subject, derived_reply_subject = _probe_abort_artifact(
         result, account=account, reply_body=reply_body, timeout=timeout
     )
+    if result.startswith("GUARD_ABORT_WINDOW"):
+        return serialize_tool_error(
+            ToolError(
+                code="REPLY_WINDOW_NOT_IDENTIFIED",
+                message=(
+                    "Native reply opened a compose window, but it could not be told apart from the "
+                    "windows already open, so the body was not typed. Nothing was saved and no email "
+                    "was sent."
+                ),
+                remediation={
+                    "preferred": (
+                        "Close other Mail compose windows for this thread, then retry. The window is "
+                        "adopted by being the one new window whose title matches the reply subject; "
+                        "another compose open on the same subject makes that ambiguous."
+                    ),
+                    "alternative": (
+                        "Do not switch off native formatting, and do not simply retry with Mail "
+                        "visible: visibility is not the blocker here, and each retry opens another "
+                        "compose window."
+                    ),
+                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                },
+            )
+        )
     if result.startswith("GUARD_ABORT_SUBJECT"):
         return serialize_tool_error(
             ToolError(
@@ -321,6 +357,59 @@ def _native_reply_abort_response(
                     "report the blocker."
                 ),
                 **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+            },
+        )
+    )
+
+
+def _unrecognized_reply_output_response(result: str, *, output_format: str) -> str:
+    """Shape a non-success compose result for the caller's ``output_format``.
+
+    ``reply_to_email(output_format="json")`` documents a JSON contract, but the
+    compose script's non-success exits are plain prose: the not-found message,
+    the ``Error: ...`` tail from its ``on error`` handler, and
+    ``QUOTE_PROOF_UNAVAILABLE``. Returned verbatim, a genuine failure reaches a
+    JSON caller as a ``json.loads`` parse error, so an agent branching on the
+    parsed ``code`` never sees the failure it is meant to handle. The abort
+    sentinels are already enveloped upstream by
+    ``_native_reply_abort_response``; this covers the rest, including any
+    sentinel added later. Text callers get the exact string they always got.
+    """
+    if output_format != "json":
+        return result
+    if result.startswith(QUOTE_PROOF_UNAVAILABLE):
+        return serialize_tool_error(
+            ToolError(
+                code=QUOTE_PROOF_UNAVAILABLE,
+                message=(
+                    "The source message has no readable content to anchor the quote proof, so the "
+                    "native reply was abandoned before anything was typed. No draft was saved and "
+                    "no email was sent."
+                ),
+                remediation={
+                    "preferred": (
+                        "Read the source message with get_email_by_id to confirm it has a body. A "
+                        "message whose content Mail cannot read has nothing for the verifier to "
+                        "prove the quote against."
+                    ),
+                    "script_output": result,
+                },
+            )
+        )
+    return serialize_tool_error(
+        ToolError(
+            code="REPLY_NOT_COMPLETED",
+            message=(
+                "The reply compose script did not report success, so there is no draft to describe. "
+                "The script's own message is preserved verbatim under remediation.script_output."
+            ),
+            remediation={
+                "preferred": (
+                    "Read script_output: it is Mail's own failure text, most often that no message "
+                    "matched message_id within recent_days. Widen recent_days or re-resolve the id "
+                    "with search_emails, then retry."
+                ),
+                "script_output": result,
             },
         )
     )

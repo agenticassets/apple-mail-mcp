@@ -316,7 +316,7 @@ def _fetch_email_records_by_ids(
     return records, mailbox_errors
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Email by ID")
 @inject_preferences
 def get_email_by_id(
     account: str,
@@ -459,7 +459,7 @@ def get_email_by_id(
     return _format_search_records_text([item])
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Emails by IDs")
 @inject_preferences
 def get_email_by_ids(
     account: str,

@@ -51,7 +51,7 @@ def _render_delete_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Delete Events")
 @inject_preferences
 def delete_events(
     event_ids: list[str],

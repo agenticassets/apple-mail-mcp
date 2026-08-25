@@ -262,7 +262,7 @@ def _needs_response_error(message: str, *, output_format: str) -> str | dict[str
     return f"Error: {message}"
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Needs Response")
 @inject_preferences
 def get_needs_response(
     account: str | None = None,

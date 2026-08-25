@@ -212,11 +212,12 @@ list_email_attachments(
     message_ids=message_ids[:5],
 )
 
-# Save specific attachment (use attachment_index from list output)
+# Save specific attachment (use the 1-based attachment_index from the list output;
+# 0 is refused with "attachment_index must be a positive 1-based integer")
 save_email_attachment(
     account="Work",
     message_ids=[message_ids[0]],
-    attachment_index=0,
+    attachment_index=1,
     save_path="~/Desktop/invoice.pdf"
 )
 ```
@@ -891,7 +892,7 @@ list_email_attachments(
 save_email_attachment(
     account="Work",
     message_ids=[message_id],
-    attachment_index=0,
+    attachment_index=1,  # 1-based, from the list output above
     save_path="~/Documents/Contracts/contract.pdf"
 )
 

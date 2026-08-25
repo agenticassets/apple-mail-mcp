@@ -56,6 +56,7 @@ def _verify_saved_reply_draft(
     draft_id: str | None = None,
     native_draft_identity: NativeReplyDraftIdentity | None = None,
     quoted_needle: str | None = None,
+    quote_anchor: str | None = None,
     expected_attachment_count: int | None = None,
     expected_attachment_names: list[str] | None = None,
     signature_requested: bool | None = None,
@@ -86,6 +87,13 @@ def _verify_saved_reply_draft(
     require_rfc_identity = "true" if native_draft_identity and native_draft_identity.is_rfc_backed else "false"
     require_exact_attachment_identity = "true" if expected_attachment_count is not None else "false"
     safe_quoted_needle = escape_applescript(_first_non_empty_line(quoted_needle or ""))
+    # Second half of the quote proof: a span of the SOURCE body. The attribution
+    # line alone can occur in an authored body or signature, so on its own it
+    # certifies nothing about the quoted original surviving. Python's strip in
+    # ``_first_non_empty_line`` is authoritative here -- a whitespace-only anchor
+    # collapses to "" and simply disables the extra check rather than matching
+    # everything.
+    safe_quote_anchor = escape_applescript(_first_non_empty_line(quote_anchor or ""))
     expected_attachment_names = expected_attachment_names or []
     expected_attachment_names_script = (
         "{" + ", ".join(f'"{escape_applescript(name)}"' for name in expected_attachment_names if name) + "}"
@@ -144,37 +152,67 @@ def _verify_saved_reply_draft(
     end lowercaseChar
 
     on foldFirstChar(theString)
-        -- ASCII-lowercases the first character of theString and leaves the
-        -- rest untouched. Guarded for empty and single-character input so
-        -- "text 2 thru -1 of" never runs off the end of a short string.
+        -- ASCII-lowercases the first NON-WHITESPACE character of theString and
+        -- leaves the rest untouched. Leading whitespace is skipped, not folded:
+        -- flattenForCompare folds before it strips, so in unstripped text a
+        -- sentence start is "." + space + letter and a paragraph start is one or
+        -- more line breaks (plus any indent) + letter. Folding character 1
+        -- blindly would fold the space -- a no-op -- and leave the capital.
+        --
+        -- Returns theString unchanged when the fold would not alter it (the
+        -- common case), avoiding a reallocation per part. That guard needs
+        -- "considering case": AppleScript string equality is case-insensitive by
+        -- default, so "a" is "A" would swallow every fold it exists to skip.
         set stringLength to count of characters of theString
         if stringLength is 0 then return theString
-        if stringLength is 1 then return my lowercaseChar(theString)
-        return (my lowercaseChar(character 1 of theString)) & (text 2 thru -1 of theString)
+        set scanIndex to 1
+        repeat while scanIndex <= stringLength
+            set scanChar to character scanIndex of theString
+            if scanChar is not in {{space, tab, return, linefeed, (character id 160)}} then exit repeat
+            set scanIndex to scanIndex + 1
+        end repeat
+        if scanIndex > stringLength then return theString
+        set sourceChar to character scanIndex of theString
+        set foldedChar to my lowercaseChar(sourceChar)
+        considering case
+            if foldedChar is sourceChar then return theString
+        end considering
+        set foldedText to foldedChar
+        if scanIndex > 1 then set foldedText to (text 1 thru (scanIndex - 1) of theString) & foldedText
+        if scanIndex < stringLength then set foldedText to foldedText & (text (scanIndex + 1) thru -1 of theString)
+        return foldedText
     end foldFirstChar
 
     on foldSentenceStarts(theText)
         -- Neutralizes macOS "Capitalize words automatically" at sentence starts
-        -- (text start and immediately after ".", "!", "?") on BOTH compare sides,
-        -- so autocapitalize cannot cause a false mismatch. An ALL-CAPS draft
-        -- (Bug 3) still fails: this only folds the first letter of each
-        -- sentence, not every letter, so the rest of an ALL-CAPS sentence stays
-        -- mismatched against the source's normal case.
+        -- (text start, immediately after ".", "!", "?", and immediately after a
+        -- line break) on BOTH compare sides, so autocapitalize cannot cause a
+        -- false mismatch. An ALL-CAPS draft (Bug 3) still fails: this only folds
+        -- the first letter of each sentence, not every letter, so the rest of an
+        -- ALL-CAPS sentence stays mismatched against the source's normal case.
         --
-        -- O(number of sentence delimiters), not O(characters): the old
-        -- per-character loop called a handler and reallocated the result
-        -- string on every single character, which is O(n^2) on
-        -- AppleScript's copy-on-append strings. Real Exchange drafts carry
-        -- long quoted thread histories (tens of KB), so that walk could burn
-        -- the whole verifier timeout on one candidate draft, surfacing a real
-        -- body mismatch (AGENTIC-1214) as a timeout instead. This version
-        -- text-item-delimiter-splits on each of ".", "!", "?" in turn and only
-        -- rewrites the first character of the (few) items that follow a
-        -- delimiter, so cost tracks sentence count, not text length.
+        -- The line-break delimiters are why flattenForCompare folds before it
+        -- strips whitespace. macOS capitalizes the first letter of a new
+        -- paragraph, not only of a new sentence, so a paragraph following a line
+        -- that ended in anything but terminal punctuation -- a greeting ending
+        -- in a comma, a colon introducing a list, a line ending in a name or a
+        -- URL -- carried a capital in the draft the source string did not have,
+        -- and one such character failed the whole case-sensitive compare as
+        -- REPLY_BODY_MISMATCH.
+        --
+        -- O(number of delimiters), not O(characters): the old per-character
+        -- loop called a handler and reallocated the result string on every
+        -- single character, which is O(n^2) on AppleScript's copy-on-append
+        -- strings. Real Exchange drafts carry long quoted thread histories
+        -- (tens of KB), so that walk could burn the whole verifier timeout on
+        -- one candidate draft, surfacing a real body mismatch (AGENTIC-1214) as
+        -- a timeout instead. This version text-item-delimiter-splits on each
+        -- delimiter in turn and only rewrites the first character of the (few)
+        -- items that follow one, so cost tracks delimiter count, not length.
         if theText is "" then return theText
         set resultText to my foldFirstChar(theText)
         set previousDelimiters to AppleScript's text item delimiters
-        repeat with delimiterChar in {{".", "!", "?"}}
+        repeat with delimiterChar in {{".", "!", "?", return, linefeed}}
             set AppleScript's text item delimiters to (contents of delimiterChar)
             set theParts to text items of resultText
             set partCount to count of theParts
@@ -190,18 +228,29 @@ def _verify_saved_reply_draft(
     end foldSentenceStarts
 
     on flattenForCompare(theText)
-        -- Whitespace-flattens (Mail's compose window soft-wraps long lines into
-        -- line breaks that the source text does not have), folds Mail's
-        -- Substitutions punctuation (smart quotes/dashes/ellipsis), collapses
-        -- hyphen runs so a source "--" matches Mail's single em-dash
-        -- substitution, and neutralizes sentence-start capitalization. Case is
-        -- preserved everywhere else, so an ALL-CAPS draft still fails the
+        -- Folds Mail's Substitutions punctuation (smart quotes/dashes/ellipsis),
+        -- neutralizes sentence- and paragraph-start capitalization,
+        -- whitespace-flattens (Mail's compose window soft-wraps long lines into
+        -- line breaks that the source text does not have), and collapses hyphen
+        -- runs so a source "--" matches Mail's single em-dash substitution. Case
+        -- is preserved everywhere else, so an ALL-CAPS draft still fails the
         -- case-sensitive compare in replyBodyAboveQuoteStatus.
+        --
+        -- All four step orders are load-bearing:
+        --   1. Punctuation first, so a smart ellipsis becomes "..." and its
+        --      periods delimit sentences on the substituted side too.
+        --   2. Sentence/paragraph starts second, while the line breaks and
+        --      spaces that mark them still exist. Folding after the strip --
+        --      which this handler used to do -- left every paragraph start
+        --      unfolded, the strip having erased the evidence of where the
+        --      paragraphs began.
+        --   3. Whitespace strip third, rejoining Mail's soft wraps (which can
+        --      fall mid-word) so the body is one contiguous span again.
+        --   4. Hyphen-run collapse last, after the strip, so a "--" whose two
+        --      hyphens are split by a wrap or a space still collapses to the
+        --      single "-" that Mail's em-dash substitution yields.
         if theText is "" then return theText
         set t to theText as string
-        repeat with stripChar in {{return, linefeed, tab, space, (character id 160)}}
-            set t to my foldPair(t, (contents of stripChar), "")
-        end repeat
         set t to my foldPair(t, (character id 8216), "'")
         set t to my foldPair(t, (character id 8217), "'")
         set t to my foldPair(t, (character id 8220), "\\"")
@@ -209,11 +258,14 @@ def _verify_saved_reply_draft(
         set t to my foldPair(t, (character id 8211), "-")
         set t to my foldPair(t, (character id 8212), "-")
         set t to my foldPair(t, (character id 8230), "...")
+        set t to my foldSentenceStarts(t)
+        repeat with stripChar in {{return, linefeed, tab, space, (character id 160)}}
+            set t to my foldPair(t, (contents of stripChar), "")
+        end repeat
         repeat 20 times
             if t does not contain "--" then exit repeat
             set t to my foldPair(t, "--", "-")
         end repeat
-        set t to my foldSentenceStarts(t)
         return t
     end flattenForCompare
 
@@ -330,7 +382,18 @@ def _verify_saved_reply_draft(
         return "missing"
     end signatureStatus
 
-    on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)
+    on quoteProofHolds(searchRegion, flatQuote, quoteAnchor)
+        -- Both halves of the proof must land in the SAME region after the body:
+        -- the attribution line proves Mail wrote a quote header, and the source
+        -- anchor proves the quoted original itself is still under it. An
+        -- attribution with no anchor is the exact failure -- header kept, quote
+        -- lost -- that a sender-only needle could not tell from success.
+        if my textOffset(searchRegion, flatQuote) is 0 then return false
+        if quoteAnchor is "" then return true
+        return (my textOffset(searchRegion, my flattenForCompare(quoteAnchor)) > 0)
+    end quoteProofHolds
+
+    on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)
         -- Locates the flattened body FIRST (case-sensitively); only a quote
         -- marker occurrence AFTER that body match counts as the quote
         -- boundary, so a reply body that itself contains "wrote:" (e.g. "As
@@ -340,8 +403,7 @@ def _verify_saved_reply_draft(
         if flatBody is "" then
             if quotedNeedle is "" then return "found"
             set flatQuote to my flattenForCompare(quotedNeedle)
-            set quoteOffsetWithoutBody to my textOffset(flatDraft, flatQuote)
-            if quoteOffsetWithoutBody > 0 then return "found"
+            if my quoteProofHolds(flatDraft, flatQuote, quoteAnchor) then return "found"
             return "quote_missing"
         end if
         set bodyOffset to my caseSensitiveOffset(flatDraft, flatBody)
@@ -351,28 +413,37 @@ def _verify_saved_reply_draft(
         set bodyEndOffset to bodyOffset + (count of characters of flatBody)
         if bodyEndOffset > (count of characters of flatDraft) then return "quote_missing"
         set searchRegion to text bodyEndOffset thru -1 of flatDraft
-        set quoteOffsetAfterBody to my textOffset(searchRegion, flatQuote)
-        if quoteOffsetAfterBody > 0 then return "found"
+        if my quoteProofHolds(searchRegion, flatQuote, quoteAnchor) then return "found"
         set quoteOffsetAnywhere to my textOffset(flatDraft, flatQuote)
         if quoteOffsetAnywhere > 0 and quoteOffsetAnywhere < bodyOffset then return "after_quote"
         return "quote_missing"
     end replyBodyAboveQuoteStatus
 
-    on verifyReplyDraft(draftMessage, fullReplyBody, quotedNeedle, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
+    on verifyReplyDraft(draftMessage, fullReplyBody, quotedNeedle, quoteAnchor, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
         set draftId to id of draftMessage as string
         set draftContent to content of draftMessage as string
+        set bodyStatus to my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)
+        -- Decide the body verdict BEFORE probing attachments and signatures. Only
+        -- the "found" and "quote_missing" rows below ever emit those four values;
+        -- the "after_quote" and "missing" rows return the draft id alone. Computing
+        -- them up front meant every draft that is not ours -- which is most of the
+        -- bounded Drafts window on the same-subject fallback scan -- paid three
+        -- separate walks of ``mail attachments`` (each reading ``file size``) plus a
+        -- full signature normalization of the body, and then discarded all of it.
+        -- The saved-draft verifier polls up to twenty times, so that waste was paid
+        -- per draft per attempt while holding the cross-process Mail lock.
+        if bodyStatus is "after_quote" then return "BODY_AFTER_QUOTE|" & draftId
+        if bodyStatus is not "found" and bodyStatus is not "quote_missing" then return "BODY_MISSING|" & draftId
         set draftAttachmentStatus to my attachmentStatus(draftMessage, expectedAttachmentCount, expectedAttachmentNames)
         set draftAttachmentCount to my attachmentCount(draftMessage)
         set draftAttachmentRows to my attachmentRows(draftMessage)
         set draftSignatureStatus to my signatureStatus(draftContent, fullReplyBody, quotedNeedle, signatureWasRequested, expectedSignatureName)
-        set bodyStatus to my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)
         if bodyStatus is "found" then
             if draftAttachmentStatus is "missing" then return "ATTACHMENT_MISSING|" & draftId & "|" & draftAttachmentStatus & "|" & draftSignatureStatus & "|" & draftAttachmentCount & "|" & draftAttachmentRows
             if draftAttachmentStatus is "unsupported" then return "ATTACHMENT_UNSUPPORTED|" & draftId & "|" & draftAttachmentStatus & "|" & draftSignatureStatus & "|" & draftAttachmentCount & "|" & draftAttachmentRows
             if draftAttachmentStatus is "unreadable" then return "ATTACHMENT_UNREADABLE|" & draftId & "|" & draftAttachmentStatus & "|" & draftSignatureStatus & "|" & draftAttachmentCount & "|" & draftAttachmentRows
             return "FOUND|" & draftId & "|" & draftAttachmentStatus & "|" & draftSignatureStatus & "|" & draftAttachmentCount & "|" & draftAttachmentRows
         end if
-        if bodyStatus is "after_quote" then return "BODY_AFTER_QUOTE|" & draftId
         if bodyStatus is "quote_missing" then return "QUOTE_MISSING|" & draftId & "|" & draftAttachmentStatus & "|" & draftSignatureStatus & "|" & draftAttachmentCount & "|" & draftAttachmentRows
         return "BODY_MISSING|" & draftId
     end verifyReplyDraft
@@ -400,6 +471,7 @@ def _verify_saved_reply_draft(
         set expectedSourceRfcMessageId to "{safe_source_rfc_message_id}"
         set fullReplyBody to do shell script "cat " & quoted form of "{verify_body_temp_path}"
         set quotedNeedle to "{safe_quoted_needle}"
+    set quoteAnchor to "{safe_quote_anchor}"
         set expectedAttachmentCount to {expected_attachment_count_value}
         set expectedAttachmentNames to {expected_attachment_names_script}
         set signatureWasRequested to {signature_requested_flag}
@@ -427,7 +499,7 @@ def _verify_saved_reply_draft(
                                     return "IDENTITY_UNAVAILABLE"
                                 end if
                             end if
-                            set exactResult to my verifyReplyDraft(exactDraft, fullReplyBody, quotedNeedle, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
+                            set exactResult to my verifyReplyDraft(exactDraft, fullReplyBody, quotedNeedle, quoteAnchor, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
                             if exactResult starts with "ATTACHMENT_" then
                                 set attachmentFailureResult to exactResult
                             else
@@ -457,7 +529,7 @@ def _verify_saved_reply_draft(
                             set draftMatched to false
                             set draftSubject to subject of draftMessage as string
                             if "{safe_reply_subject}" is "" or draftSubject is "{safe_reply_subject}" then
-                                set draftResult to my verifyReplyDraft(draftMessage, fullReplyBody, quotedNeedle, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
+                                set draftResult to my verifyReplyDraft(draftMessage, fullReplyBody, quotedNeedle, quoteAnchor, expectedAttachmentCount, expectedAttachmentNames, signatureWasRequested, expectedSignatureName)
                                 if draftResult starts with "FOUND|" then
                                     set draftMatched to true
                                     set foundDraftId to draftResult

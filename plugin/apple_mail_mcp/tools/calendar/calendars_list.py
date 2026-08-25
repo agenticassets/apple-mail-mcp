@@ -21,7 +21,7 @@ def _render_calendars_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Calendar List")
 @inject_preferences
 def list_calendars(output_format: str = "json", timeout: int | None = None) -> str:
     """

@@ -317,7 +317,7 @@ async def _get_recent_emails_structured_async(
     return combined[:max_total]
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Inbox Dashboard")
 @inject_preferences
 async def inbox_dashboard(
     account: str | None = None,

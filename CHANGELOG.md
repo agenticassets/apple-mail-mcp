@@ -2,6 +2,192 @@
 
 ## Unreleased
 
+## 3.12.0 - 2026-08-24
+
+Two lanes. The first is the directory listing work: metadata, documentation,
+and validators that a vendor plugin-directory reviewer (Claude plugin
+directory, Claude Desktop extension directory, Cursor Marketplace) checks
+before admitting a plugin. The second is an adversarial review of the drafting
+surface, weighted toward the native reply path, which did change tool
+behavior — see **Drafting hardening** below.
+
+### Directory listings
+
+- **Every tool now carries a human-readable `title`.** Host plugin browsers and
+  directory reviewers show `title` beside the tool name; the 41 tools had only
+  their snake_case names. Titles sit on the `@mcp.tool` decorator next to the
+  existing `readOnlyHint` / `destructiveHint` / `idempotentHint` annotations,
+  and the registry test fails if any tool lacks one.
+- **The Claude Desktop bundle manifest moved from the deprecated
+  `dxt_version: "0.1"` to MCPB `manifest_version: "0.3"`,** adding
+  `compatibility.platforms: ["darwin"]`, `compatibility.runtimes.python:
+  ">=3.13,<3.14"`, `privacy_policies`, `documentation`, and `support`. The
+  desktop extension directory rejects a submission missing any of these.
+  `_check_mcpb_directory_contract` in `tools/manifest_checks/install_contracts.py`
+  enforces them on every commit.
+- **Cursor Marketplace manifests.** A root `.cursor-plugin/marketplace.json`
+  (the file Cursor reads for a repository submission) plus a full
+  `plugin/.cursor-plugin/plugin.json` with `displayName`, `author`, `license`,
+  `homepage`, `repository`, `keywords`, `category`, `logo`, and `skills`. New
+  `plugin/assets/logo.svg` and `plugin/README.md` ship inside the plugin
+  payload; `distribution/marketplace-payload.json` classifies them and
+  `tools/manifest_checks/cursor.py` validates the marketplace file.
+- **`PRIVACY.md` and `SECURITY.md`** at the repository root, with README
+  "Privacy Policy" and "Support" sections. Every directory form asks for a
+  privacy-policy URL and a support channel; the MCPB manifest and the bundle
+  README point at these files. Cowork and MCPB install steps in the README now
+  link the latest GitHub Release instead of a local build.
+
+### Drafting hardening
+
+Adversarial review of the compose surface, weighted toward
+`reply_to_email(native_format=True)`. The recurring shape is the one v3.11.8
+chased: a check that could not fail, a locator mistaken for evidence, or a
+failure reported as prose to a caller parsing JSON.
+
+- **macOS autocorrect could wedge Mail for as long as the machine stayed
+  untouched.** A native reply of any real length made Mail stop answering
+  *every* AppleScript call — not just the reply — while the process stayed
+  alive, kept syncing IMAP, and kept answering Accessibility requests normally.
+  Sampling a wedged Mail put all 2,293 main-thread samples inside
+  `-[NSCorrectionPanel _interceptEvents]`: macOS autocorrect / inline
+  predictions react to the synthesized keystrokes and open a correction panel,
+  whose **nested modal event loop pumps UI events but does not dispatch Apple
+  Events**. The reply's next statement is a `tell application "Mail"`, which
+  then never returns; `run_applescript` SIGKILLs the subprocess at its deadline,
+  so the failure arrived with no script state and a compose window left behind.
+  Measured: a 1,200-character reply timed out at 120.2 s and Mail refused all 29
+  probes over the following 10 minutes. The typing loop now dismisses the panel
+  after every chunk, which also *rejects* the suggestion — the same substitution
+  that corrupts typed bodies. The same reply now completes in 30.9 s, verified.
+  Because a correction panel is an `NSPanel` and not an `AXSheet`, it is
+  invisible to Accessibility: a clean AX window list is **not** evidence that no
+  modal is up.
+- **`TYPING_CHUNK_SIZE` raised 80 → 160**, making a 2,400-character native reply
+  about 19% faster (39.0 s → 31.5 s) with no change in behavior. **If native
+  replies start failing `REPLY_BODY_MISMATCH`, set it to 120** — the pre-tested
+  fallback, verified 4/4 at ~33.9 s, one step further from the corruption cliff
+  and costing ~2.4 s. That fallback is documented at the top of the constant so
+  it is found from the failure, not from the changelog. The chosen value has no
+  *tested* margin below the cliff; the risk is accepted because the failure mode
+  is loud (the full-body verifier catches it) rather than a quietly wrong email.
+- **The sweep behind that change.** A controlled
+  sweep holding body length fixed and varying only chunk size found that larger
+  chunks corrupt the body. At 2,400 characters, sizes 200 and 250 failed
+  `REPLY_BODY_MISMATCH` on 4 of 4 runs, while 80, 120, and 160 verified on 9 of
+  9 — a cliff between 160 and 200, not a gradient. The failures were also
+  *slower* (69-71 s against 31-39 s), because a mismatch burns the retype path,
+  so the larger sizes are worse on both speed and safety. Larger chunks type
+  more text between panel dismissals, so a substitution lands before the
+  rejection does. At 1,200 characters every size passed, including 250: a short
+  body does not discriminate, and re-testing this needs at least 2,400
+  characters. Full sweep and the case for 120 as the only defensible change:
+  `tasks/active/native-reply/live-timing-and-frontmost-2026-08-24.md` § 4.
+
+- **The native reply identity capsule parser rejected every valid capsule.**
+  The capsule is four pipe-separated fields whose fourth names the evidence
+  class; the parser instead required that fourth field to be literally
+  `transaction`, which threw out every `rfc` capsule (the strong one) and every
+  `transaction` capsule from a source message that had a Message-ID. The
+  practical effect was that `reply_to_email` came back with no exact Drafts id
+  on essentially every native reply: `exact_id_verified` was always false,
+  attachment-bearing replies failed with `IDENTITY_UNAVAILABLE` despite a
+  correctly saved draft, and the delete-and-retype retry was unreachable. The
+  emitter and parser are now round-tripped by
+  `tests/compose/test_native_reply_identity_capsule.py`.
+- **The quote proof was one-sided.** Verification looked for Mail's attribution
+  line and nothing else, so it could not distinguish "the quoted original
+  survived" from "Mail kept the header and lost the quote" — and an attribution
+  line can occur in an authored body or a signature. Both halves must now land
+  in the same region after the reply body: the attribution line, plus a span of
+  the source message.
+- **Two error paths named a Drafts artifact as a delete target without
+  proving it was ours.** `REPLY_BODY_MISMATCH` published the suspected artifact
+  as `draft_id` under an instruction to delete it, ignoring the
+  `artifact_identity_verified` flag its sibling error builder already gates on.
+  All five native-reply abort paths (`TYPING_INTERRUPTED`, sender-override
+  refusal, and the three guard aborts) shared a cleanup string offering the
+  same delete, on paths where identity can never be established: the probe
+  searches by reply subject with no draft id to match against, and a reply
+  subject is `Re: <thread>`, which a reply draft the user wrote earlier in that
+  same thread also carries. Every one of those errors has already reported that
+  nothing was saved. Both now report the id for inspection only, say why, and
+  the verified branch steers to the guarded
+  `manage_drafts(action='delete', ..., expected_in_reply_to=..., expected_subject=..., expected_to=...)`
+  form so Mail re-checks identity at delete time. `pre-draft-verification.md`
+  was telling agents to delete unconditionally and is updated to match.
+- **Forward's subject bind could select a previous forward's draft.**
+  `Fwd: <subject>` is exactly what an earlier forward of the same message
+  leaves in Drafts. The bind now excludes ids present before this call saved
+  anything, and the cleanup path refuses to delete a row bound only by subject
+  (`operation_exact_subject` is a locator, not evidence).
+- **HTML compose destroyed a non-text clipboard.** The snapshot read only
+  `NSPasteboardTypeString` and skipped the restore entirely when that came back
+  `missing value` — which is what a copied image, a Finder file copy, or
+  RTF-only content returns. The user's clipboard was replaced by the tool's
+  HTML and never given back, and a pasteboard has no undo. Every item and every
+  flavor is now snapshotted as detached `NSPasteboardItem`s and written back,
+  from one module shared by the success path and the error handler.
+- **`manage_drafts(action='find', in_reply_to='<>')` reported a confident "no
+  draft".** The value passed the truthiness check, then matched nothing because
+  AppleScript's `contains ""` is false for every string. The caller asked
+  whether a reply draft already existed and would read the empty result as no,
+  whose usual next step is composing a duplicate. It is now refused up front,
+  matching the sibling delete path.
+- **`forward_email` raised a transport exception on the common call.** The
+  handler re-raised whenever `message` was falsy, but `message` is the optional
+  lead-in text above the forwarded mail, not a marker of progress — so the
+  plain `forward_email(message_id=..., to=...)` crashed while adding a lead-in
+  returned a readable error. `compose_email` and `reply_to_email` both return
+  unconditionally.
+- **`~typo/report.pdf` escaped the attachment validator as an exception.**
+  Path expansion ran before validation, so `expanduser` raised `RuntimeError`
+  out of a helper whose contract is `(paths, error)`. Validation now runs
+  first, on the raw path.
+- **Non-success reply exits reached JSON callers as prose.**
+  `reply_to_email(output_format="json")` documents a JSON contract, but the
+  compose script's failure exits are plain text, so a genuine failure arrived
+  at an agent as a `json.loads` error and the parsed `code` it was meant to
+  branch on never existed. Three codes now cover them: `REPLY_NOT_COMPLETED`
+  (catch-all, with Mail's own text preserved under
+  `remediation.script_output`), `QUOTE_PROOF_UNAVAILABLE` (source message has
+  no readable content to anchor the proof), and `REPLY_WINDOW_NOT_IDENTIFIED`
+  (the compose window could not be told apart from windows already open, so
+  nothing was typed).
+
+Performance, with behavior held fixed:
+
+- **The reply body editor is resolved once per reply, not once per chunk.**
+  Resolution walks `entire contents of targetWindow`, materializing the compose
+  window's whole Accessibility subtree over Apple Events; at 80 characters per
+  chunk a 1,600-character body paid twenty of those walks. The reference is now
+  carried across the loop and each chunk pays a single `AXFocused` read, with a
+  re-resolve before aborting. Nothing is verified less: the per-chunk guard
+  still re-proves window identity and editor focus before the first keystroke.
+- **The body verdict is decided before attachments and signatures are probed.**
+  Only two of the four verdict rows emit those values, so every draft that is
+  not ours — most of the bounded Drafts window on the same-subject fallback
+  scan — paid three walks of `mail attachments` (each reading `file size`) plus
+  a full signature normalization, then discarded all of it. The saved-draft
+  verifier polls up to twenty times, so that was paid per draft per attempt
+  while holding the cross-process Mail lock.
+- **The Drafts resolver probes before spending its patience.** It kept the same
+  1.8s total budget but paid an unconditional `delay 0.8` first, which every
+  reply paid whether or not iCloud had already indexed the row.
+
+Also: clicking the reply editor is now confined to the initial resolution while
+the body is still empty (`click` seats the caret where it lands, so clicking
+mid-body would splice later chunks into the middle of the text already typed
+and still report success); `verify_draft` detects the quote boundary through a
+shared earliest-quote-offset handler instead of two hardcoded needles; the
+reply Drafts resolver returns a fixed arity on every branch and signals "no
+identity" with `missing value` rather than `""`, which is also a legal draft-id
+value inside that handler; `reply_scripts.py` split its pure mode/option
+helpers into `reply_script_helpers.py` to stay under the module line budget;
+and a new source lint (`tests/cross_cutting/test_applescript_handler_names.py`)
+catches AppleScript handlers whose `end` name does not match their `on` name,
+which `osacompile` accepts and silently rewrites, so no compile gate can see it.
+
 ## 3.11.9 - 2026-08-22
 
 - **Separate plugin hosts could automate Mail at the same time.** The existing

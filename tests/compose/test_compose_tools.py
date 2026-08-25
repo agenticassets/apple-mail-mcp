@@ -60,7 +60,9 @@ def _assert_full_body_verifier_shape(testcase, verifier_script):
     """
     testcase.assertIn('set fullReplyBody to do shell script "cat "', verifier_script)
     testcase.assertIn("on flattenForCompare(theText)", verifier_script)
-    testcase.assertIn("on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)", verifier_script)
+    testcase.assertIn(
+        "on replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)", verifier_script
+    )
     testcase.assertIn("considering case", verifier_script)
     testcase.assertNotIn("set replyBodyNeedle to", verifier_script)
 
@@ -109,7 +111,10 @@ def _saved_reply_draft_output(
     quote_needle=None,
 ):
     if draft_id is not None and draft_identity is None:
-        draft_identity = f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>"
+        # Four fields, evidence last — the exact shape reply_scripts.py emits.
+        # A three-field fixture passed here for months against a parser that
+        # rejected every real capsule; see test_native_reply_identity_capsule.py.
+        draft_identity = f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc"
     lines = [
         "SAVING REPLY AS DRAFT",
         "",
@@ -1107,10 +1112,16 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         # title equality against the adopted replySubject.
         self.assertIn("on stripReplySubjectPrefixes(rawSubject)", script)
         self.assertIn("on subjectCoresMatch(leftSubject, rightSubject)", script)
+        # An empty SE title is a real answer (compose windows report one); a
+        # System Events call that never answered at all is not. The old form
+        # accepted the "(unset)" sentinel, so a missing Accessibility grant read
+        # as agreement from a probe that had not run.
         self.assertIn(
-            'set seOk to (guardSE is replySubject or guardSE is "" or guardSE is "(unset)")',
+            'set seOk to (guardSEAnswered and (guardSE is replySubject or guardSE is ""))',
             script,
         )
+        self.assertNotIn('guardSE is "(unset)"', script)
+        self.assertIn("on error systemEventsErrMsg", script)
         self.assertIn("set replySubject to mailWindowTitle", script)
         self.assertIn("set mailOk to (guardMail is replySubject and guardMailWindowId is replyWindowId)", script)
         # Native default never pins the account alias (that drops the logo signature).
@@ -1654,7 +1665,9 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertIn("messages 1 thru headEnd of draftsMailbox", verifier_script)
         _assert_full_body_verifier_shape(self, verifier_script)
         self.assertIn('if "Re: Test" is "" or draftSubject is "Re: Test" then', verifier_script)
-        self.assertIn("my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle)", verifier_script)
+        self.assertIn(
+            "my replyBodyAboveQuoteStatus(draftContent, fullReplyBody, quotedNeedle, quoteAnchor)", verifier_script
+        )
         self.assertIn('return "BODY_MISSING|" & bodyMissingDraftId', verifier_script)
 
     def test_native_reply_scripts_capture_saved_draft_id_only_for_draft_and_open(self):
@@ -1697,11 +1710,11 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                     self.assertIn("set preSaveDraftSnapshot to my fullDraftRfcSnapshot(draftsMailbox, 75)", script)
                     self.assertIn("set candidateDraftId to id of aDraft as string", script)
                     self.assertIn("if my headerHasExactRfcToken(item 2 of inReplyToResult, sourceMessageId)", script)
-                    self.assertIn('if (count of newDraftIdentities) is not 1 then return ""', script)
+                    self.assertIn('if (count of newDraftIdentities) is not 1 then return missing value', script)
                     self.assertIn(
                         'if candidateRfcMessageId is "" then return {candidateDraftId, "", "", "transaction"}', script
                     )
-                    self.assertIn('if postSaveDraftCount is not (preSaveDraftCount + 1) then return ""', script)
+                    self.assertIn('if postSaveDraftCount is not (preSaveDraftCount + 1) then return missing value', script)
                     self.assertIn("if totalDrafts > draftCap then return missing value", script)
                     self.assertIn("repeat with identityAttempt from 1 to 3", script)
                     self.assertNotIn("set replyDraftId to id of replyMessage as string", script)
@@ -2514,7 +2527,12 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertEqual(payload["code"], "REPLY_WINDOW_FOCUS_FAILED")
         self.assertEqual(payload["remediation"]["draft_artifact_status"], "body_missing")
         self.assertEqual(payload["remediation"]["suspected_draft_id"], "116814")
-        self.assertIn("manage_drafts(action='delete', draft_id=...)", payload["remediation"]["cleanup"])
+        # Reported for inspection, not offered as a delete target: the probe
+        # finds it by reply subject with no draft id to match against, so it can
+        # just as easily be a draft the user wrote in this thread earlier. Full
+        # contract in tests/compose/test_reply_abort_cleanup_authorization.py.
+        self.assertIn("verify_draft(draft_id=...)", payload["remediation"]["cleanup"])
+        self.assertNotIn("manage_drafts(action='delete'", payload["remediation"]["cleanup"])
 
     def test_native_reply_subject_guard_mismatch_returns_distinct_error(self):
         # When Mail opens a reply-looking window whose title still fails the subject
@@ -2627,6 +2645,11 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         # as line breaks (sometimes mid-word). flattenForCompare strips whitespace
         # (return/linefeed/tab/space/nbsp) before the case-sensitive contiguous-
         # substring match, so a wrapped body is still found (AGENTIC-1214).
+        #
+        # The strip now runs AFTER foldSentenceStarts, not before it. That order is
+        # the fix for the paragraph-start half of REPLY_BODY_MISMATCH: the fold needs
+        # the line breaks the strip erases, so folding second left every paragraph
+        # start case-sensitive. Both steps must survive, in that order.
         captured = []
 
         def fake_run(script, timeout=120):
@@ -2647,8 +2670,18 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         verifier_script = captured[0]
         _assert_full_body_verifier_shape(self, verifier_script)
         self.assertIn("on foldPair(theText, fromText, toText)", verifier_script)
-        self.assertIn("repeat with stripChar in {return, linefeed, tab, space, (character id 160)}", verifier_script)
+        strip_loop = "repeat with stripChar in {return, linefeed, tab, space, (character id 160)}"
+        self.assertIn(strip_loop, verifier_script)
         self.assertNotIn("on stripLineBreaks(theText)", verifier_script)
+
+        flatten_body = verifier_script[verifier_script.index("on flattenForCompare(theText)") :]
+        flatten_body = flatten_body[: flatten_body.index("end flattenForCompare")]
+        self.assertLess(
+            flatten_body.index("set t to my foldSentenceStarts(t)"),
+            flatten_body.index(strip_loop),
+            "flattenForCompare must fold sentence/paragraph starts before it strips the "
+            "whitespace that marks them",
+        )
 
     def test_native_reply_verifier_folds_sentence_starts_with_delimiter_split_not_character_walk(self):
         # AGENTIC-1214 perf fix: foldSentenceStarts used to walk the whole
@@ -2677,7 +2710,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
 
         verifier_script = captured[0]
         self.assertIn("on foldFirstChar(theString)", verifier_script)
-        self.assertIn('repeat with delimiterChar in {".", "!", "?"}', verifier_script)
+        self.assertIn('repeat with delimiterChar in {".", "!", "?", return, linefeed}', verifier_script)
         self.assertNotIn("repeat with i from 1 to n", verifier_script)
         self.assertNotIn("set foldNext to true", verifier_script)
 
@@ -2729,7 +2762,10 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
             )
 
         script = _main_reply_script(captured)
-        self.assertIn("on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId)", script)
+        self.assertIn(
+            "on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId, preResolvedEditor)",
+            script,
+        )
         self.assertIn(f"set chunkEnd to chunkStart + {compose_tools.TYPING_CHUNK_SIZE} - 1", script)
         self.assertIn(f"delay {compose_tools.TYPING_INTER_CHUNK_DELAY}", script)
         self.assertIn("key up shift", script)
@@ -2786,7 +2822,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id=draft_id,
-                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>",
+                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|91061"
@@ -2831,7 +2867,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id=draft_id,
-                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>",
+                    draft_identity=f"{draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|91061"
@@ -2869,7 +2905,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         def fake_run(script, timeout=120):
             if "reply foundMessage" in script:
                 compose_calls["count"] += 1
-                self.assertIn('if (count of newDraftIdentities) is not 1 then return ""', script)
+                self.assertIn('if (count of newDraftIdentities) is not 1 then return missing value', script)
                 self.assertIn("if my headerHasExactRfcToken(item 2 of inReplyToResult, sourceMessageId)", script)
                 return _saved_reply_draft_output(to="native reply recipients")
             if 'set targetDraftIdText to ""' in script:
@@ -2907,7 +2943,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 return _saved_reply_draft_output(
                     to="native reply recipients",
                     draft_id="91061",
-                    draft_identity="91061|||<draft-91061@example.com>|||<source@example.com>",
+                    draft_identity="91061|||<draft-91061@example.com>|||<source@example.com>|||rfc",
                 )
             if 'set targetDraftIdText to "91061"' in script:
                 return "BODY_MISSING|55555"
@@ -2927,7 +2963,13 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
 
         payload = json.loads(result)
         self.assertEqual(payload["code"], "REPLY_BODY_MISMATCH")
-        self.assertEqual(payload["remediation"]["artifact_message_id"], "55555")
+        # The id is reported as a suspect, not as a delete target. The retry
+        # logic above refuses to delete 55555 because it cannot prove it created
+        # it; the remediation must not then hand the same id to the agent as
+        # `draft_id` with instructions to delete it.
+        self.assertEqual(payload["remediation"]["suspect_artifact_message_id"], "55555")
+        self.assertNotIn("draft_id", payload["remediation"])
+        self.assertFalse(payload["remediation"]["artifact_identity_verified"])
         self.assertFalse(payload["remediation"]["retyped"])
         self.assertEqual(compose_calls["count"], 1)
 
@@ -4320,7 +4362,12 @@ class ComposeRunApplescriptMigrationTests(unittest.TestCase):
             captured["script"],
         )
         self.assertIn("close (window of newMsg) saving no", captured["script"])
-        self.assertGreater(captured["script"].count("pb's setString:oldClip"), 1)
+        # The clipboard goes back on the success path AND the error path. It is
+        # restored by writing back every saved item, not just the text flavor:
+        # reading only `stringForType:` returned missing value for a copied
+        # image or file and skipped the restore altogether, destroying the copy.
+        self.assertIn("pb's pasteboardItems()", captured["script"])
+        self.assertGreater(captured["script"].count("pb's writeObjects:savedPasteboardItems"), 1)
         self.assertNotIn('keystroke "s" using command down', captured["script"])
         self.assertNotIn("close window 1 saving yes", captured["script"])
         self.assertIn("Email saved as draft (HTML)", result)
@@ -4522,6 +4569,86 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout("a" * 10_000, 45)
         self.assertEqual(effective_timeout, 45)
         self.assertIsNone(timeout_error)
+
+
+class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
+    """The granted timeout must exceed the *measured* typing duration.
+
+    The tests above derive their expected value from the same constants the
+    code under test uses, so they stay green however wrong those constants
+    are. These compare against a live measurement hardcoded here instead, so a
+    mis-calibration fails rather than agreeing with itself.
+
+    Fitted on Darwin 25.5, 2026-08-24 over four **successful** live draft
+    replies at 1, 1, 21, and 39 chunks: 0.70s per chunk on a 34.2s fixed
+    overhead, R2 0.98. Only ~4s of the fixed part is literal ``delay``
+    statements; the rest is Mail, Accessibility, and Apple Event work.
+
+    Successful runs only, deliberately. A reply that fails verification also
+    burns a 20-attempt fallback poll at 1s per attempt that the success path
+    never runs -- a 21-chunk success measured 47.6s against an 80.0s 20-chunk
+    failure. Fitting a line through a failed run charges that poll to typing
+    and triples the apparent per-chunk slope.
+    """
+
+    MEASURED_SECONDS_PER_CHUNK = 0.70
+    MEASURED_FIXED_OVERHEAD_SECONDS = 34.2
+
+    def _measured_duration(self, body_length: int) -> float:
+        chunk_count = -(-body_length // compose_constants.TYPING_CHUNK_SIZE) if body_length else 0
+        return chunk_count * self.MEASURED_SECONDS_PER_CHUNK + self.MEASURED_FIXED_OVERHEAD_SECONDS
+
+    def test_granted_timeout_exceeds_measured_duration_at_every_admissible_length(self):
+        # Walk the range rather than spot-checking: a projection can be ahead
+        # of real duration at short and capped lengths and still cross over in
+        # the middle, and the middle is where ordinary replies live.
+        for body_length in (0, 1, 57, 500, 1599, 3040, 5000, 8000, 20_000, 38_000):
+            with self.subTest(body_length=body_length):
+                granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+                if error is not None:
+                    continue  # refused up front, so there is no timeout to outlive
+                assert granted is not None
+                self.assertGreater(
+                    granted,
+                    self._measured_duration(body_length),
+                    f"{body_length}-char reply is granted {granted}s for a run measured at "
+                    f"~{self._measured_duration(body_length):.0f}s; AppleScriptTimeout would "
+                    "fire mid-typing and strand a partially typed compose window",
+                )
+
+    def test_fixed_overhead_constant_reflects_the_measured_overhead(self):
+        # The slack is cushion for host variance, not a place to hide an
+        # understated overhead. Before 2026-08-24 this constant read 20 against
+        # a measured 34.2 and only the slack kept the projection honest.
+        self.assertGreaterEqual(
+            reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+            self.MEASURED_FIXED_OVERHEAD_SECONDS,
+        )
+
+    def test_per_chunk_projection_is_conservative_but_not_absurd(self):
+        # Over-projecting is the safe direction; it is not a free one. The
+        # timeout is also how long a wedged compose window holds the Mail lock
+        # before anyone hears about it, so keep the margin within 3x.
+        projected_per_chunk = (
+            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
+        )
+        self.assertGreater(projected_per_chunk, self.MEASURED_SECONDS_PER_CHUNK)
+        self.assertLess(projected_per_chunk, self.MEASURED_SECONDS_PER_CHUNK * 3)
+
+    def test_refusal_cap_admits_no_body_it_cannot_finish(self):
+        # The cap and the projection have to agree: every body the cap admits
+        # must also be one the granted timeout can outlive.
+        per_chunk_cost = (
+            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
+        )
+        largest_admissible_chunks = int(reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost)
+        body_length = largest_admissible_chunks * compose_constants.TYPING_CHUNK_SIZE
+
+        granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+
+        self.assertIsNone(error, "body at the cap boundary should be admitted, not refused")
+        assert granted is not None
+        self.assertGreater(granted, self._measured_duration(body_length))
 
 
 if __name__ == "__main__":

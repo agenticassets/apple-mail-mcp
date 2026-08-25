@@ -507,6 +507,18 @@ class ModuleReport:
             return f"{self.rel}: UNCHECKED (known gap) — {self.ledger_reason}"
         if self.uncovered_inline:
             return f"{self.rel}: UNCHECKED — emits AppleScript this hook cannot reach"
+        if self.fragments:
+            # "no AppleScript to check" is a lie for a module that emits nothing
+            # BUT AppleScript — reply_draft_resolver_scripts.py wraps its handlers
+            # in ``using terms from application "Mail"`` rather than a ``tell``
+            # block, so discovery classifies every one as a fragment and the old
+            # wording read as a clean bill of health. The fragments are compiled
+            # where they are spliced (reply_scripts.py's native reply builder);
+            # say that instead of implying there was nothing here.
+            return (
+                f"{self.rel}: {len(self.fragments)} fragment(s), no standalone script"
+                " — compiled through their caller"
+            )
         return f"{self.rel}: no AppleScript to check"
 
 

@@ -3,7 +3,7 @@
 <!-- mcp-name: io.github.agentic-assets/apple-mail -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/pypi/v/mcp-apple-mail)](https://pypi.org/project/mcp-apple-mail/)
+[![Release](https://img.shields.io/github/v/release/Agentic-Assets/apple-mail-mcp)](https://github.com/Agentic-Assets/apple-mail-mcp/releases/latest)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![GitHub stars](https://img.shields.io/github/stars/Agentic-Assets/apple-mail-mcp?style=social)](https://github.com/Agentic-Assets/apple-mail-mcp/stargazers)
@@ -25,6 +25,8 @@ An MCP server that gives AI assistants full access to Apple Mail and Apple Calen
 | Doc | Purpose |
 |-----|---------|
 | [`CLAUDE.md`](CLAUDE.md) | Root navigation hub for agents |
+| [`PRIVACY.md`](PRIVACY.md) | Privacy policy: what the server accesses, what leaves the Mac, files it writes |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and the safety model |
 | [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) | Tool performance rules, read-only, skills, plugin-dev |
 | [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md) | Live Mail verification via `apple-mail` CLI |
 | [`plugin/docs/CLAUDE.md`](plugin/docs/CLAUDE.md) | Plugin wrapper & `start_mcp.sh` |
@@ -56,11 +58,17 @@ Track bugs and feature work in the [Apple Mail MCP](https://linear.app/agenticas
 
 ## Quick Install
 
-**Prerequisites:** macOS with Apple Mail configured. The PyPI/server install
-supports Python 3.10+. The self-contained Claude, Codex, and Cursor plugin
-payload currently requires Apple Silicon (macOS arm64) and Python 3.13 because
-its bundled, hash-locked wheelhouse is platform-specific and never downloads
-packages at startup.
+**Prerequisites:** macOS with Apple Mail configured. Installing the Python
+package from a source checkout of this repository supports Python 3.10+. The
+self-contained Claude, Codex, and Cursor plugin payload currently requires Apple
+Silicon (macOS arm64) and Python 3.13 because its bundled, hash-locked wheelhouse
+is platform-specific and never downloads packages at startup.
+
+> **Note on PyPI.** The PyPI project named `mcp-apple-mail` is published by the
+> original upstream author, not by Agentic Assets, and installing it does not
+> install this software. Every install path below comes from this repository:
+> the plugin marketplaces, the `.mcpb` bundle and `.plugin` upload from a GitHub
+> Release, or a source checkout.
 
 ### Agentic Assets Marketplace (Recommended)
 
@@ -244,7 +252,7 @@ Cowork uses Anthropic's **remote marketplace backend** (`remoteMarketplaceClient
 
 **Workaround — upload the `.plugin` file directly (recommended for Cowork):**
 
-1. Build the artifacts: `bash tools/gates/build-artifacts.sh` — produces `apple-mail.plugin`, `apple-mail-plugin.zip`, and `apple-mail-mcp-v{VERSION}.mcpb` at the repo root.
+1. Download `apple-mail.plugin` from the [latest GitHub Release](https://github.com/Agentic-Assets/apple-mail-mcp/releases/latest), or build the artifacts locally with `bash tools/gates/build-artifacts.sh`, which produces `apple-mail.plugin`, `apple-mail-plugin.zip`, and `apple-mail-mcp-v{VERSION}.mcpb` at the repo root.
 2. Cowork → **Customize** → **Add plugin** → **Upload plugin**.
 3. Select `apple-mail.plugin` and enable **Apple Mail**.
 
@@ -307,34 +315,49 @@ Generate draft-safe Claude/OpenClaw MCP config from the same checkout:
 </details>
 
 <details>
-<summary><strong>uvx (zero install, MCP server only)</strong></summary>
+<summary><strong>Python package from source (MCP server only)</strong></summary>
+
+Install the package from a checkout of this repository. There is no
+Agentic-Assets-published PyPI release, so `pip install mcp-apple-mail` and
+`uvx mcp-apple-mail` resolve to the unrelated upstream project rather than to
+this software.
 
 ```bash
-claude mcp add apple-mail -- uvx mcp-apple-mail
+git clone https://github.com/Agentic-Assets/apple-mail-mcp.git
+cd apple-mail-mcp
+python3 -m venv .venv
+.venv/bin/pip install .
+
+claude mcp add apple-mail -- "$(pwd)/.venv/bin/mcp-apple-mail"
 ```
 
-Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Pin to a tagged release instead of the default branch by adding
+`git checkout v{VERSION}` after the clone, or install straight from a tag:
+
+```bash
+python3 -m venv ~/.venvs/apple-mail
+~/.venvs/apple-mail/bin/pip install \
+  "git+https://github.com/Agentic-Assets/apple-mail-mcp.git@v{VERSION}"
+
+claude mcp add apple-mail -- ~/.venvs/apple-mail/bin/mcp-apple-mail
+```
+
+Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`),
+point `command` at the absolute path of the `mcp-apple-mail` executable in that
+virtual environment:
 
 ```json
 {
   "mcpServers": {
     "apple-mail": {
-      "command": "uvx",
-      "args": ["mcp-apple-mail"]
+      "command": "/absolute/path/to/.venv/bin/mcp-apple-mail"
     }
   }
 }
 ```
 
-</details>
-
-<details>
-<summary><strong>pip install (MCP server only)</strong></summary>
-
-```bash
-pip install mcp-apple-mail
-claude mcp add apple-mail -- mcp-apple-mail
-```
+For Claude Desktop most users should prefer the `.mcpb` bundle or `.plugin`
+upload below, which need no Python environment management.
 
 </details>
 
@@ -343,7 +366,7 @@ claude mcp add apple-mail -- mcp-apple-mail
 
 For Claude Desktop chat (outside of Cowork mode):
 
-1. Download `apple-mail-mcp-v{VERSION}.mcpb` from [Releases](https://github.com/Agentic-Assets/apple-mail-mcp/releases) or build locally with `bash tools/gates/build-artifacts.sh`.
+1. Download `apple-mail-mcp-v{VERSION}.mcpb` from the [latest GitHub Release](https://github.com/Agentic-Assets/apple-mail-mcp/releases/latest) or build locally with `bash tools/gates/build-artifacts.sh`.
 2. In Claude Desktop, open Settings → **Extensions** (or **Developer → MCP Servers → Install from file** depending on app version), pick **Add Custom Plugin / Install from file**, and select the `.mcpb`.
 3. Grant the Automation + Mail Data Access prompts macOS surfaces on first run.
 4. Restart Claude Desktop so the extension registers across chat and Cowork sessions. Cowork projects may need to enable the extension explicitly in the project's plugin settings.
@@ -666,7 +689,7 @@ The plugin MCP server starts with **`--draft-safe`** by default for both Claude 
 ## Requirements
 
 - macOS with Apple Mail configured
-- Python 3.10+ for the PyPI/server package
+- Python 3.10+ for the MCP server package installed from a source checkout
 - Apple Silicon (macOS arm64) and Python 3.13 for the self-contained Claude, Codex, Cursor, and MCPB plugin payload
 - `fastmcp>=3.1.0,<4` and `mcp-ui-server==1.0.0` for the MCP Apps dashboard
 - Claude Desktop, Codex Desktop/CLI, or any MCP-compatible client
@@ -683,6 +706,18 @@ The plugin MCP server starts with **`--draft-safe`** by default for both Claude 
 | Permission errors | Grant access in **System Settings > Privacy & Security > Automation** |
 | Rich draft shows raw HTML | Use `create_rich_email_draft` instead of pasting HTML into `manage_drafts` or AppleScript `content` |
 | Save / Don't Save when closing drafts | Use default `mode="draft"` or `mode="open"` (saves first). Avoid leaving unsaved compose windows from bulk agent runs |
+
+## Privacy Policy
+
+Apple Mail MCP runs entirely on your Mac and talks to Mail.app and Calendar.app through AppleScript. The server code opens no network connections of its own and sends nothing to Agentic Assets: no telemetry, no analytics, no advertising, and no sale of data. The AI client you run it in (Claude, Codex, Cursor, or another MCP client) sends tool inputs and outputs to its own model provider under that provider's terms, which this plugin does not control. The optional `inbox_dashboard` UI page loads one script from a CDN when a host renders it; pass `output_format="json"` to avoid that.
+
+Full policy, including which macOS permissions are used, which files the server writes, and how the send-blocking modes work: [PRIVACY.md](PRIVACY.md). Agentic Assets company policies: [agenticassets.ai/privacy](https://agenticassets.ai/privacy) and [agenticassets.ai/terms](https://agenticassets.ai/terms).
+
+## Support
+
+- Bugs, questions, and install problems: [GitHub Issues](https://github.com/Agentic-Assets/apple-mail-mcp/issues). Include your macOS version, host client, install method, and the tool's structured error output, with addresses and subjects redacted.
+- Security vulnerabilities: report privately through [GitHub Security Advisories](https://github.com/Agentic-Assets/apple-mail-mcp/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md).
+- Publisher: [Agentic Assets](https://agenticassets.ai).
 
 ## Project Structure
 
@@ -738,5 +773,8 @@ MIT -- see [LICENSE](LICENSE).
 - [Releases](https://github.com/Agentic-Assets/apple-mail-mcp/releases)
 - [Issues](https://github.com/Agentic-Assets/apple-mail-mcp/issues)
 - [Discussions](https://github.com/Agentic-Assets/apple-mail-mcp/discussions)
+- [Privacy Policy](PRIVACY.md)
+- [Security Policy](SECURITY.md)
+- [Agentic Assets](https://agenticassets.ai)
 - [FastMCP](https://github.com/jlowin/fastmcp)
 - [Model Context Protocol](https://modelcontextprotocol.io)

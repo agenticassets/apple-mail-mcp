@@ -257,7 +257,7 @@ def _parse_overview_account(raw: str) -> dict[str, Any]:
     return result
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Inbox Overview")
 @inject_preferences
 async def get_inbox_overview(
     account: str | None = None,

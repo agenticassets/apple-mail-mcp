@@ -12,6 +12,12 @@ from pathlib import Path
 from manifest_checks import common
 from manifest_checks.common import DIRECT_SOURCE_MARKETPLACE_NAME, MARKETPLACE_COMPONENT_FIELDS
 
+# Claude Desktop extension-directory submissions need a current MCPB manifest
+# (spec 0.3; the legacy ``dxt_version`` key is deprecated), a ``compatibility``
+# block, and an HTTPS ``privacy_policies`` array. Mail.app only exists on macOS.
+MCPB_MANIFEST_VERSION = "0.3"
+MCPB_PLATFORMS = ["darwin"]
+
 
 def _check_mcp_launcher_contract(
     server: object,
@@ -158,6 +164,36 @@ def _check_mcpb_runtime_contract(mcpb: dict, errors: list[str]) -> None:
         for config_key in re.findall(r"\$\{user_config\.([^}]+)\}", value):
             if config_key not in (mcpb.get("user_config") or {}):
                 errors.append(f"mcpb manifest server.mcp_config.env.{key}: unknown user_config.{config_key}")
+
+
+def _check_mcpb_directory_contract(mcpb: dict[str, object], errors: list[str]) -> None:
+    """Validate the Desktop bundle metadata the extension directory requires."""
+    if "dxt_version" in mcpb:
+        errors.append("mcpb manifest dxt_version: legacy key; use manifest_version")
+    if mcpb.get("manifest_version") != MCPB_MANIFEST_VERSION:
+        errors.append(f"mcpb manifest manifest_version: expected '{MCPB_MANIFEST_VERSION}'")
+
+    policies = mcpb.get("privacy_policies")
+    if not isinstance(policies, list) or not policies:
+        errors.append("mcpb manifest privacy_policies: expected non-empty list of https URLs")
+    else:
+        for url in policies:
+            if not isinstance(url, str) or not url.startswith("https://"):
+                errors.append(f"mcpb manifest privacy_policies: expected https URL, got {url!r}")
+
+    compatibility = mcpb.get("compatibility")
+    if not isinstance(compatibility, dict):
+        errors.append("mcpb manifest compatibility: expected object")
+        return
+    if compatibility.get("platforms") != MCPB_PLATFORMS:
+        errors.append(f"mcpb manifest compatibility.platforms: expected {MCPB_PLATFORMS} (Mail.app is macOS-only)")
+    runtimes = compatibility.get("runtimes") or {}
+    if not isinstance(runtimes, dict):
+        errors.append("mcpb manifest compatibility.runtimes: expected object")
+        return
+    runtime = runtimes.get("python")
+    if not isinstance(runtime, str) or not runtime:
+        errors.append("mcpb manifest compatibility.runtimes.python: expected non-empty version constraint")
 
 
 def _check_marketplace_contract(expected_version: str, errors: list[str]) -> None:

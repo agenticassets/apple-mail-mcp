@@ -198,7 +198,7 @@ def _verify_exact_saved_forward_draft(
     return lines
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Forward Email")
 @inject_preferences
 def forward_email(
     account: str | None = None,
@@ -577,8 +577,13 @@ tell application "Mail"
             f"{account!r}. Try again or pass a larger `timeout`."
         )
     except Exception as e:
-        if not message:
-            raise
+        # This used to re-raise whenever `message` was falsy. `message` is the
+        # optional lead-in text the caller writes above the forwarded mail, not
+        # a marker of how far the forward got -- so the plain
+        # `forward_email(message_id=..., to=...)` call, the common one, crashed
+        # out as a transport exception while adding a lead-in got a readable
+        # error. `compose_email` and `reply_to_email` both return here
+        # unconditionally; this is the outlier, and nothing depended on it.
         return f"Error: Forward failed: {_clean_applescript_error(e)}"
     finally:
         if fwd_msg_temp_path:

@@ -51,7 +51,7 @@ If `mcp__apple-mail__*` tools are absent from the client tool list, stop and fix
 | Goal | Primary tool chain |
 |------|-------------------|
 | See configured accounts | `list_accounts()` |
-| See outbound identities | `list_account_addresses(account="...")` |
+| See outbound identities | `list_account_addresses()` — takes no `account`; it returns every account mapped to its addresses, so filter the returned dict by account name yourself |
 | Snapshot unread + recent hints | `get_inbox_overview()`; start compact `output_format`, avoid heavy dashboards during debugging |
 | Page recent inbox bodies | `search_emails(limit=5..8, output_format="json")` for ids; `list_inbox_emails(max_emails=5..8)` for subject skim only |
 | Locate a needle | Narrow `search_emails(limit=5, recent_days=2..7)` → if empty on Exchange, retry `sender="..."` with higher `limit` → `get_email_by_id(account=..., message_id=...)` |
@@ -83,11 +83,15 @@ If `mcp__apple-mail__*` tools are absent from the client tool list, stop and fix
 
 ### When to reach for `inbox_dashboard`
 
-`inbox_dashboard()` returns a structured snapshot (unread, recent, pinned, suggestions) in a single call. Prefer it over chained `get_inbox_overview` + `list_inbox_emails` + `get_needs_response` calls when:
+`inbox_dashboard()` returns a snapshot of per-account unread counts plus recent emails in a single call. It defaults to `output_format="ui"`, which returns an interactive HTML resource for MCP Apps hosts; pass `output_format="json"` whenever you need to read the data yourself.
+
+The JSON payload has `account`, `accounts` (per-account unread counts), `recent_emails` (each row carrying `was_replied_to` and `has_draft`), `errors`, `error_details` when non-empty, `draft_scan`, the `unread_count_source` / `unread_count_measured` / `unread_count_note` provenance fields, and the echoed `include_preview` / `max_total` / `max_per_account` bounds. **There is no pinned list and no suggestions list** — for suggested actions use `get_inbox_overview(include_suggestions=True)`, and for an actionable queue use `get_needs_response`. Read `errors` before reporting: an empty `recent_emails` alongside a non-empty `errors` is an incomplete scan, not an empty inbox, and `accounts` values are Mail's **cached** unread aggregate rather than measured counts.
+
+Prefer it over chained `get_inbox_overview` + `list_inbox_emails` + `get_needs_response` calls when:
 
 - `get_inbox_overview` is timing out or returning partial JSON with `errors` on a large inbox.
 - The user asks for a visual or one-glance summary ("show me what my inbox looks like", "give me the dashboard").
-- Choose it for consolidated unread, recent, and suggested-action data without three separate AppleScript round-trips.
+- Consolidated unread counts and recent mail are enough, without three separate AppleScript round-trips.
 
 It is heavier than a compact `get_inbox_overview` on small inboxes, so keep `get_inbox_overview(output_format="compact", ...)` as the daily-loop default. Escalate to `inbox_dashboard()` as the rescue path.
 

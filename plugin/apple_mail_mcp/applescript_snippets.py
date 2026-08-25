@@ -116,6 +116,69 @@ def text_offset_handler(*, name: str = "textOffset") -> str:
     """
 
 
+#: Quote-header styles the draft verifier recognizes as the start of a quoted
+#: original. Apple Mail writes ``On <date>, <sender> wrote:``; Outlook and
+#: Exchange write a ``-----Original Message-----`` separator instead. Both were
+#: already accepted as proof that a quote exists, so both must also mark where
+#: it begins.
+QUOTE_HEADER_MARKERS: tuple[str, ...] = (" wrote:", "-----Original Message-----")
+
+
+def earliest_quote_offset_handler(
+    *,
+    name: str = "earliestQuoteOffset",
+    text_offset_name: str = "textOffset",
+) -> str:
+    """Return a handler giving the offset where a draft's quoted original starts.
+
+    Zero means no quote header was found. Requires ``text_offset_handler`` in
+    the same script.
+
+    The lowest positive offset across every recognized style, so callers that
+    ask "is there a quote?" and callers that ask "where does the body above the
+    quote end?" cannot disagree. They did: the body slice keyed on ``" wrote:"``
+    alone, so an Outlook-style reply -- whose quote the very next line already
+    recognized -- produced offset 0 and left the slice spanning the entire body,
+    quoted original included. A signature quoted from an earlier message in the
+    thread then read as a signature on the draft itself.
+    """
+    marker_list = ", ".join(f'"{marker}"' for marker in QUOTE_HEADER_MARKERS)
+    return f"""
+    on {name}(bodyText)
+        set lowestOffset to 0
+        repeat with quoteMarker in {{{marker_list}}}
+            set markerOffset to my {text_offset_name}(bodyText, contents of quoteMarker)
+            if markerOffset > 0 then
+                if lowestOffset is 0 or markerOffset < lowestOffset then set lowestOffset to markerOffset
+            end if
+        end repeat
+        return lowestOffset
+    end {name}
+    """
+
+
+def body_above_quote_handler(*, name: str = "bodyAboveQuote") -> str:
+    """Return a handler slicing off everything from the quoted original onward.
+
+    Takes the offset from ``earliest_quote_offset_handler`` rather than
+    recomputing it, so one scan serves both the "is there a quote?" flag and
+    this slice.
+
+    Offset 1 means the draft opens with the quote header and has no body of its
+    own. Testing ``> 1`` alone and letting that case fall through to the whole
+    body reintroduces the false positive this pair exists to remove: text
+    quoted from an earlier message in the thread reading as text the draft
+    itself contains.
+    """
+    return f"""
+    on {name}(bodyText, quoteOffset)
+        if quoteOffset is 0 then return bodyText
+        if quoteOffset > 1 then return text 1 thru (quoteOffset - 1) of bodyText
+        return ""
+    end {name}
+    """
+
+
 def thread_headers_block(
     *,
     message_var: str,

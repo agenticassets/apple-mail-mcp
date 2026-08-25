@@ -670,7 +670,7 @@ def main() -> int:
         (not (out / "eml").is_dir(), f"no eml/ under {out}"),
         (dest == out or str(dest).startswith(str(out) + os.sep),
          f"--dest {dest} is inside --out; write to a new directory instead"),
-        ("01-raw-emlx-snapshot" in dest.parts,
+        ("01-raw-snapshot" in dest.parts,
          "refusing to write inside the raw snapshot"),
         (write and dest.exists() and any(dest.iterdir()) and not args.force,
          f"{dest} is not empty; use --force to add to it"),

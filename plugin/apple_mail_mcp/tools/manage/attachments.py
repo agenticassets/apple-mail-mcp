@@ -22,7 +22,7 @@ from apple_mail_mcp.tools import manage
 from apple_mail_mcp.tools.manage.helpers import _check_message_ids_cap
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Save Attachment")
 @inject_preferences
 def save_email_attachment(
     account: str | None = None,
@@ -118,19 +118,21 @@ def save_email_attachment(
     message_filter_script = f"set inboxMessages to every message of inboxMailbox whose {id_condition}"
     not_found_detail = f"Message ids: {', '.join(normalized_ids)}"
 
-    # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
-    expanded_path = str(Path(save_path).expanduser())
-
-    # Path validation: use shared helper for home-dir + sensitive-dir checks
+    # Path validation first: use shared helper for home-dir + sensitive-dir
+    # checks. It expands the path inside its own guard, and expanding here
+    # first would hand it a path that already raised -- `~typo/file.pdf` throws
+    # RuntimeError out of `expanduser`, which leaves the tool as a transport
+    # exception instead of the error string every other bad path returns.
     path_err = validate_save_path(
-        expanded_path,
+        save_path,
         path_label="Save path",
         sensitive_action="save attachments to",
     )
     if path_err:
         return path_err
 
-    save_path_obj = Path(expanded_path).resolve()
+    # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
+    save_path_obj = Path(save_path).expanduser().resolve()
     expanded_path = str(save_path_obj)
     save_dir = save_path_obj.parent
 

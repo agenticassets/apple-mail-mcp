@@ -107,7 +107,7 @@ def _thread_mailbox_script(mailbox: str, mailboxes: list[str] | None) -> str:
     '''
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Email Thread")
 @inject_preferences
 def get_email_thread(
     account: str,

@@ -31,7 +31,8 @@ source identity.
    or source inventory hash by hand, and let the Marketplace tool compute its
    candidate payload digest.
 5. In a clean `chore/*` branch of `Agentic-Assets-Marketplace`, run the command
-   printed by the handoff, currently `prepare_plugin_update.py --plugin apple-mail --prepare --next-steps`.
+   printed by the handoff, currently `python3 tools/prepare_plugin_update.py --plugin apple-mail --prepare --next-steps`,
+   from that checkout's root. The script lives in the Marketplace repository, not here.
 6. Complete only the Marketplace-owned stages: isolated evidence, admission,
    signed attestation, the Marketplace release gate, and a normal reviewed PR.
    Commit and push the candidate plus redacted proof files before admission so

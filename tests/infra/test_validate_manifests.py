@@ -111,12 +111,18 @@ class ValidateManifestsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "plugin/.cursor-plugin").mkdir(parents=True)
+            (root / "plugin/assets").mkdir()
+            (root / "plugin/skills").mkdir()
+            (root / "plugin/assets/logo.svg").write_text("<svg/>", encoding="utf-8")
             (root / "plugin/.cursor-plugin/plugin.json").write_text(
                 json.dumps(
                     {
                         "name": "apple-mail",
                         "version": "3.11.4",
                         "description": "Cursor adapter with 41 MCP tools.",
+                        "author": {"name": "Agentic Assets"},
+                        "logo": "./assets/logo.svg",
+                        "skills": "./skills/",
                         "mcpServers": "./mcp.json",
                     }
                 ),
@@ -177,6 +183,208 @@ class ValidateManifestsTests(unittest.TestCase):
         self.assertIn(
             "plugin/mcp.json mcpServers.apple-mail.cwd: omit cwd for Cursor plugins",
             errors,
+        )
+
+    def test_cursor_plugin_manifest_rejects_keys_and_assets_the_cursor_schema_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "plugin/.cursor-plugin").mkdir(parents=True)
+            (root / "plugin/assets").mkdir()
+            (root / "plugin/skills").mkdir()
+            (root / "plugin/assets/logo.svg").write_text("<svg/>", encoding="utf-8")
+            (root / "plugin/mcp.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "apple-mail": {
+                                "command": "/bin/bash",
+                                "args": ["${CURSOR_PLUGIN_ROOT}/start_mcp.sh", "--draft-safe"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            valid = {
+                "name": "apple-mail",
+                "displayName": "Apple Mail",
+                "version": "3.11.4",
+                "description": "Cursor adapter with 41 MCP tools.",
+                "author": {"name": "Agentic Assets"},
+                "license": "MIT",
+                "logo": "./assets/logo.svg",
+                "skills": "./skills/",
+                "mcpServers": "./mcp.json",
+            }
+            manifest_path = root / "plugin/.cursor-plugin/plugin.json"
+            manifest_path.write_text(json.dumps(valid), encoding="utf-8")
+
+            errors: list[str] = []
+            original_root = validate_manifests.ROOT
+            validate_manifests.ROOT = root
+            try:
+                validate_manifests._check_cursor_plugin_contract("3.11.4", 41, errors)
+                self.assertEqual(errors, [])
+
+                errors.clear()
+                invalid = {
+                    **valid,
+                    "strict": True,
+                    "author": {"name": "Agentic Assets", "url": "https://example.com", "email": "a@example.com"},
+                    "logo": "../logo.svg",
+                    "skills": "./missing-skills",
+                }
+                manifest_path.write_text(json.dumps(invalid), encoding="utf-8")
+                validate_manifests._check_cursor_plugin_contract("3.11.4", 41, errors)
+            finally:
+                validate_manifests.ROOT = original_root
+
+        self.assertIn(
+            "plugin/.cursor-plugin/plugin.json: keys not allowed by the Cursor schema: strict",
+            errors,
+        )
+        self.assertIn(
+            "plugin/.cursor-plugin/plugin.json author: keys not allowed by the Cursor schema: url",
+            errors,
+        )
+        self.assertIn(
+            "plugin/.cursor-plugin/plugin.json author.email: omit contact addresses from public Cursor manifests",
+            errors,
+        )
+        self.assertIn(
+            "plugin/.cursor-plugin/plugin.json logo: must be a relative path inside the plugin root, got '../logo.svg'",
+            errors,
+        )
+        self.assertIn(
+            "plugin/.cursor-plugin/plugin.json skills: directory './missing-skills' not found under plugin/",
+            errors,
+        )
+
+    def test_cursor_plugin_contract_requires_author_logo_and_skills(self):
+        """Deleting a contract-required manifest field must fail, not silently pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "plugin/.cursor-plugin").mkdir(parents=True)
+            (root / "plugin/mcp.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "apple-mail": {
+                                "command": "/bin/bash",
+                                "args": ["${CURSOR_PLUGIN_ROOT}/start_mcp.sh", "--draft-safe"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "plugin/.cursor-plugin/plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "apple-mail",
+                        "version": "3.11.4",
+                        "description": "Cursor adapter with 41 MCP tools.",
+                        "mcpServers": "./mcp.json",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            errors: list[str] = []
+            original_root = validate_manifests.ROOT
+            validate_manifests.ROOT = root
+            try:
+                validate_manifests._check_cursor_plugin_contract("3.11.4", 41, errors)
+            finally:
+                validate_manifests.ROOT = original_root
+
+        self.assertIn("plugin/.cursor-plugin/plugin.json author: missing required field", errors)
+        self.assertIn("plugin/.cursor-plugin/plugin.json logo: missing required field", errors)
+        self.assertIn("plugin/.cursor-plugin/plugin.json skills: missing required field", errors)
+
+    def test_cursor_marketplace_catalog_keeps_standalone_identity_over_shared_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".cursor-plugin").mkdir()
+            catalog_path = root / ".cursor-plugin/marketplace.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "name": "apple-mail-mcp",
+                        "owner": {"name": "Agentic Assets"},
+                        "plugins": [
+                            {
+                                "name": "apple-mail",
+                                "source": "./plugin",
+                                "description": "Draft-safe Apple Mail automation with 41 MCP tools.",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            errors: list[str] = []
+            original_root = validate_manifests.ROOT
+            validate_manifests.ROOT = root
+            try:
+                validate_manifests._check_cursor_marketplace_catalog(41, errors)
+                self.assertEqual(errors, [])
+
+                errors.clear()
+                catalog_path.write_text(
+                    json.dumps(
+                        {
+                            "name": "agentic-assets",
+                            "owner": {"name": "Agentic Assets", "url": "https://example.com"},
+                            "metadata": {"description": "ok"},
+                            "plugins": [
+                                {
+                                    "name": "apple-mail",
+                                    "source": "./plugins/apple-mail",
+                                    "description": "Apple Mail automation with 40 MCP tools.",
+                                    "strict": True,
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                validate_manifests._check_cursor_marketplace_catalog(41, errors)
+
+                owner_errors: list[str] = []
+                catalog_path.write_text(
+                    json.dumps(
+                        {
+                            "name": "apple-mail-mcp",
+                            "plugins": [
+                                {
+                                    "name": "apple-mail",
+                                    "source": "./plugin",
+                                    "description": "Draft-safe Apple Mail automation with 41 MCP tools.",
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                validate_manifests._check_cursor_marketplace_catalog(41, owner_errors)
+            finally:
+                validate_manifests.ROOT = original_root
+
+        self.assertEqual(
+            owner_errors,
+            [".cursor-plugin/marketplace.json owner: missing required field"],
+        )
+        self.assertEqual(
+            errors,
+            [
+                ".cursor-plugin/marketplace.json name: got 'agentic-assets', expected 'apple-mail-mcp'",
+                ".cursor-plugin/marketplace.json owner: keys not allowed by the Cursor schema: url",
+                ".cursor-plugin/marketplace.json plugins[0]: keys not allowed by the Cursor schema: strict",
+                ".cursor-plugin/marketplace.json plugins[0] source: got './plugins/apple-mail', expected './plugin'",
+                ".cursor-plugin/marketplace.json plugins[0] description: description claims 40 tools, registry has 41",
+            ],
         )
 
     def test_changelog_release_version_requires_matching_latest_release_heading(self):
@@ -525,6 +733,63 @@ class ValidateManifestsTests(unittest.TestCase):
                 "mcpb manifest server.mcp_config.env: missing DEFAULT_MAIL_SIGNATURE",
             ],
         )
+
+    def test_mcpb_directory_contract_rejects_legacy_dxt_and_missing_directory_fields(self):
+        manifest = {
+            "dxt_version": "0.1",
+            "privacy_policies": ["http://example.com/privacy"],
+            "compatibility": {"platforms": ["darwin", "win32"], "runtimes": {}},
+        }
+        errors = []
+
+        validate_manifests._check_mcpb_directory_contract(manifest, errors)
+
+        self.assertEqual(
+            errors,
+            [
+                "mcpb manifest dxt_version: legacy key; use manifest_version",
+                "mcpb manifest manifest_version: expected '0.3'",
+                "mcpb manifest privacy_policies: expected https URL, got 'http://example.com/privacy'",
+                "mcpb manifest compatibility.platforms: expected ['darwin'] (Mail.app is macOS-only)",
+                "mcpb manifest compatibility.runtimes.python: expected non-empty version constraint",
+            ],
+        )
+
+        errors = []
+        validate_manifests._check_mcpb_directory_contract({"manifest_version": "0.3"}, errors)
+        self.assertEqual(
+            errors,
+            [
+                "mcpb manifest privacy_policies: expected non-empty list of https URLs",
+                "mcpb manifest compatibility: expected object",
+            ],
+        )
+
+    def test_mcpb_directory_contract_reports_non_object_runtimes_instead_of_crashing(self):
+        """A truthy non-dict runtimes must produce a validation error, not an AttributeError."""
+        for runtimes in ("python", ["python"]):
+            with self.subTest(runtimes=runtimes):
+                manifest = {
+                    "manifest_version": "0.3",
+                    "privacy_policies": ["https://example.com/privacy"],
+                    "compatibility": {"platforms": ["darwin"], "runtimes": runtimes},
+                }
+                errors = []
+
+                validate_manifests._check_mcpb_directory_contract(manifest, errors)
+
+                self.assertEqual(errors, ["mcpb manifest compatibility.runtimes: expected object"])
+
+    def test_mcpb_directory_contract_accepts_repo_manifest(self):
+        """The shipped bundle manifest must carry the directory-submission fields."""
+        manifest = json.loads((ROOT / "apple-mail-mcpb/manifest.json").read_text(encoding="utf-8"))
+        errors = []
+
+        validate_manifests._check_mcpb_directory_contract(manifest, errors)
+
+        self.assertEqual(errors, [])
+        self.assertNotIn("dxt_version", manifest)
+        self.assertEqual(list(manifest)[0], "manifest_version")
 
     def test_marketplace_contract_checks_source_and_skill_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

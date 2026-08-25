@@ -81,7 +81,7 @@
       "silent": 2
     },
     "plugin/apple_mail_mcp/tools/compose/html_subject_scripts.py": {
-      "bare": 5,
+      "bare": 4,
       "silent": 1
     },
     "plugin/apple_mail_mcp/tools/compose/lookup_scripts.py": {

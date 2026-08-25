@@ -74,7 +74,8 @@ For every email in your inbox, choose ONE action:
 **For downloads** (collect `message_id` from list/search first):
 ```
 list_email_attachments(account="Work", message_ids=["12345"])
-save_email_attachment(account="Work", message_ids=["12345"], attachment_index=0, save_path="~/Downloads/file.pdf")
+save_email_attachment(account="Work", message_ids=["12345"], attachment_index=1, save_path="~/Downloads/file.pdf")
+# attachment_index is 1-based; 0 is refused with "attachment_index must be a positive 1-based integer"
 ```
 
 ## Complete Inbox Zero Workflow

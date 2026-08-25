@@ -52,7 +52,7 @@ def _top_senders_error(
     return f"Error: {message}"
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Top Senders")
 @inject_preferences
 def get_top_senders(
     account: str | None = None,

@@ -95,7 +95,7 @@ def _require_span(recurring: bool, span: str | None) -> None:
         )
 
 
-@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS, title="Update Event")
 @inject_preferences
 def update_event(
     event_id: str,

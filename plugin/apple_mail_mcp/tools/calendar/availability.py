@@ -48,7 +48,7 @@ def _render_availability_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Check Availability")
 @inject_preferences
 async def check_availability(
     start: str,

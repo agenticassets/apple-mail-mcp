@@ -5,15 +5,18 @@ does not have to carry these self-contained pieces and push the module over
 the 600 LOC budget. The BODY-verification failure mapping (``body_missing`` /
 ``body_after_quote`` / ``not_found`` / timeouts) still lives in
 ``verification.py`` and is dispatched from ``reply.py``; only the pre-save ABORT
-sentinels (``SENDER_OVERRIDE_FAILED``, ``GUARD_ABORT*``, ``TYPING_INTERRUPTED``)
-are mapped here, since ``reply.py`` calls the same dispatcher for both the first
-compose attempt and a retype attempt.
+sentinels (``REPLY_ACCESSIBILITY_UNAVAILABLE``, ``SENDER_OVERRIDE_FAILED``,
+``GUARD_ABORT*``, ``TYPING_INTERRUPTED``) are mapped here, since ``reply.py``
+calls the same dispatcher for both the first compose attempt and a retype
+attempt.
 """
 
 from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
 from apple_mail_mcp.core import escape_applescript, normalize_message_ids
 from apple_mail_mcp.tools import compose
 from apple_mail_mcp.tools.compose.constants import (
+    QUOTE_PROOF_UNAVAILABLE,
+    REPLY_ACCESSIBILITY_UNAVAILABLE,
     TYPING_CHUNK_SIZE,
     TYPING_INTER_CHUNK_DELAY,
     TYPING_PER_CHUNK_OVERHEAD_SECONDS,
@@ -27,17 +30,35 @@ from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_reply_
 from apple_mail_mcp.tools.compose.verification import _extract_output_field
 
 # Fixed overhead the native compose script spends outside chunk-typing delays:
-# the up-to-4 focus-guard attempts (~0.3-0.5s settle delays each), the initial
-# `reply ... with opening window` render (~1.6s), and the post-type save/close
-# settle. Slack is extra cushion for host variance. Both exist so a timeout
-# scaled only from chunk-typing time cannot come in under budget and let
-# AppleScriptTimeout fire mid-typing, stranding a partially typed compose
-# window that a retry could then type into on top of.
-_NATIVE_TYPING_FIXED_OVERHEAD_SECONDS = 20
+# claiming the front, the up-to-4 focus-guard attempts, the initial
+# `reply ... with opening window` render, the compose-window adoption scan, the
+# accessibility walk that resolves the body editor, and the post-type
+# save/close settle plus Drafts identity read. Slack is extra cushion for host
+# variance. Both exist so a timeout scaled only from chunk-typing time cannot
+# come in under budget and let AppleScriptTimeout fire mid-typing, stranding a
+# partially typed compose window that a retry could then type into on top of.
+#
+# Measured at 34.2s on Darwin 25.5 (2026-08-24), the intercept of four
+# successful live replies at 1, 1, 21, and 39 chunks (R2 0.98). The former
+# value of 20 understated it by 14s. That was never fatal -- the slack below
+# absorbed the gap, and the projection stayed ahead of real duration at every
+# body length -- but a constant documented as "fixed overhead" should be the
+# fixed overhead, not a number the slack quietly rescues. Raising it to 35
+# gives each constant its stated meaning and leaves the slack doing the job it
+# is named for: host variance.
+#
+# Only ~4s of the 34.2s is literal `delay` statements; the rest is Mail,
+# Accessibility, and Apple Event work, so it does not shrink by tuning sleeps.
+_NATIVE_TYPING_FIXED_OVERHEAD_SECONDS = 35
 _NATIVE_TYPING_SLACK_SECONDS = 30
 # Bodies whose projected chunk-typing time would exceed this are refused with
 # a structured error instead of silently under- or wildly over-provisioning
-# the AppleScript timeout.
+# the AppleScript timeout. The cap is a projected duration, not a character
+# count: at 1.0s per chunk it admits roughly 38,400 characters, which really
+# does type in about six minutes of held foreground. That is a deliberate
+# policy ceiling on how long the native path may own the screen, not a
+# feasibility limit -- the projection stays ahead of measured duration well
+# past it.
 _NATIVE_TYPING_MAX_PROJECTED_SECONDS = 480
 
 
@@ -168,9 +189,18 @@ def _probe_abort_artifact(
     return probe.status, suspected, guard_reply_subject, derived_reply_subject
 
 
+#: Inspect-only by construction. ``_probe_abort_artifact`` searches Drafts by
+#: reply subject with ``draft_id=None``, so the row it finds can never be
+#: identity-verified -- and the subject it searches on is "Re: <thread>", which
+#: is exactly what a reply draft the user wrote earlier in this same thread also
+#: carries. The probe cannot tell those apart, and every abort path that reports
+#: it has already said nothing was saved. This used to end "...or delete that
+#: exact Drafts artifact with ... manage_drafts(action='delete', draft_id=...)",
+#: which pointed an agent at a coin flip over user-authored text with no undo.
 _EXACT_ARTIFACT_CLEANUP = (
-    "If suspected_draft_id is present, inspect or delete that exact Drafts artifact "
-    "with verify_draft or manage_drafts(action='delete', draft_id=...)."
+    "If suspected_draft_id is present, inspect that Drafts artifact with "
+    "verify_draft(draft_id=...). Do not delete it automatically: it was found by "
+    "subject, not by verified reply identity, so it may be a draft you did not create."
 )
 
 
@@ -205,7 +235,9 @@ def _native_reply_abort_response(
 ) -> str | None:
     """Return a structured error for a native-reply abort sentinel, or None.
 
-    Handles ``TYPING_INTERRUPTED`` (focus lost mid-chunk-typing; the partial
+    Handles ``REPLY_ACCESSIBILITY_UNAVAILABLE`` (the Accessibility bridge
+    reports no windows for Mail, checked before the reply window is opened),
+    ``TYPING_INTERRUPTED`` (focus lost mid-chunk-typing; the partial
     compose window was already discarded by the AppleScript),
     ``SENDER_OVERRIDE_FAILED`` (Mail refused an explicitly requested
     ``from_address`` before anything was saved), and ``GUARD_ABORT`` /
@@ -215,6 +247,39 @@ def _native_reply_abort_response(
     the first compose attempt and a retype attempt so a second-run abort is
     routed through the same branches instead of looping again.
     """
+    if result.startswith(REPLY_ACCESSIBILITY_UNAVAILABLE):
+        # No artifact probe: this sentinel is emitted *before* the `reply`
+        # command, so no compose window was ever opened and there is nothing
+        # to look for in Drafts.
+        return serialize_tool_error(
+            ToolError(
+                code=REPLY_ACCESSIBILITY_UNAVAILABLE,
+                message=(
+                    "System Events can see Mail but cannot see any of Mail's windows, so the reply "
+                    "body could never have been typed. The reply was abandoned before Mail's reply "
+                    "window was opened: nothing was saved, no email was sent, and no compose window "
+                    "was left behind."
+                ),
+                remediation={
+                    "preferred": (
+                        "Check the display first. A sleeping or locked screen produces exactly this "
+                        "reading -- the accessibility bridge reports zero windows for every "
+                        "application while raising no error -- and waking the display fixes it with "
+                        "no other change. Wake and unlock the Mac, then retry."
+                    ),
+                    "alternative": (
+                        "If the display is awake and unlocked, the Accessibility grant is not in "
+                        "effect for the application running this tool: add or re-arm it in System "
+                        "Settings > Privacy & Security > Accessibility (an existing entry can stop "
+                        "taking effect after an app update; toggling it off and on re-arms it), then "
+                        "quit and reopen that application. Either way this is an environment failure, "
+                        "not a formatting one -- do not switch off native_format. compose_email and "
+                        "create_rich_email_draft need no Accessibility and keep working meanwhile."
+                    ),
+                    "script_output": result,
+                },
+            )
+        )
     if result.startswith("TYPING_INTERRUPTED"):
         artifact_status, suspected, _guard_subject, _derived_subject = _probe_abort_artifact(
             result, account=account, reply_body=reply_body, timeout=timeout
@@ -237,8 +302,10 @@ def _native_reply_abort_response(
                         suspected,
                         result,
                         cleanup=(
-                            "If suspected_draft_id is present, a stray artifact may still exist; inspect or "
-                            "delete it with verify_draft or manage_drafts(action='delete', draft_id=...)."
+                            "If suspected_draft_id is present, the discarded compose may have left a stray "
+                            "artifact; inspect it with verify_draft(draft_id=...). Do not delete it "
+                            "automatically: it was found by subject, not by verified reply identity, so it "
+                            "may be a draft you did not create."
                         ),
                     ),
                 },
@@ -278,6 +345,56 @@ def _native_reply_abort_response(
     artifact_status, suspected_artifact_id, guard_reply_subject, derived_reply_subject = _probe_abort_artifact(
         result, account=account, reply_body=reply_body, timeout=timeout
     )
+    if result.startswith("GUARD_ABORT_FRONTMOST"):
+        return serialize_tool_error(
+            ToolError(
+                code="REPLY_MAIL_NOT_FRONTMOST",
+                message=(
+                    "Mail could not be brought to the front, so the reply body was never typed. "
+                    "System Events sends keystrokes to whatever application is frontmost, so typing "
+                    "into a background Mail would have entered the text somewhere else entirely. "
+                    "Nothing was saved and no email was sent."
+                ),
+                remediation={
+                    "preferred": (
+                        "Leave Mail frontmost for the few seconds the reply takes, then retry. The "
+                        "tool activates Mail itself and waits for it, so this means another "
+                        "application kept taking the front back -- see detail for which one."
+                    ),
+                    "alternative": (
+                        "A locked screen, an active screen saver, or a full-screen Space that "
+                        "excludes Mail all prevent activation. This is a foreground-attention "
+                        "failure, not a permission or formatting one: do not switch off "
+                        "native_format, and do not grant more permissions to work around it."
+                    ),
+                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                },
+            )
+        )
+    if result.startswith("GUARD_ABORT_WINDOW"):
+        return serialize_tool_error(
+            ToolError(
+                code="REPLY_WINDOW_NOT_IDENTIFIED",
+                message=(
+                    "Native reply opened a compose window, but it could not be told apart from the "
+                    "windows already open, so the body was not typed. Nothing was saved and no email "
+                    "was sent."
+                ),
+                remediation={
+                    "preferred": (
+                        "Close other Mail compose windows for this thread, then retry. The window is "
+                        "adopted by being the one new window whose title matches the reply subject; "
+                        "another compose open on the same subject makes that ambiguous."
+                    ),
+                    "alternative": (
+                        "Do not switch off native formatting, and do not simply retry with Mail "
+                        "visible: visibility is not the blocker here, and each retry opens another "
+                        "compose window."
+                    ),
+                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                },
+            )
+        )
     if result.startswith("GUARD_ABORT_SUBJECT"):
         return serialize_tool_error(
             ToolError(
@@ -321,6 +438,59 @@ def _native_reply_abort_response(
                     "report the blocker."
                 ),
                 **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+            },
+        )
+    )
+
+
+def _unrecognized_reply_output_response(result: str, *, output_format: str) -> str:
+    """Shape a non-success compose result for the caller's ``output_format``.
+
+    ``reply_to_email(output_format="json")`` documents a JSON contract, but the
+    compose script's non-success exits are plain prose: the not-found message,
+    the ``Error: ...`` tail from its ``on error`` handler, and
+    ``QUOTE_PROOF_UNAVAILABLE``. Returned verbatim, a genuine failure reaches a
+    JSON caller as a ``json.loads`` parse error, so an agent branching on the
+    parsed ``code`` never sees the failure it is meant to handle. The abort
+    sentinels are already enveloped upstream by
+    ``_native_reply_abort_response``; this covers the rest, including any
+    sentinel added later. Text callers get the exact string they always got.
+    """
+    if output_format != "json":
+        return result
+    if result.startswith(QUOTE_PROOF_UNAVAILABLE):
+        return serialize_tool_error(
+            ToolError(
+                code=QUOTE_PROOF_UNAVAILABLE,
+                message=(
+                    "The source message has no readable content to anchor the quote proof, so the "
+                    "native reply was abandoned before anything was typed. No draft was saved and "
+                    "no email was sent."
+                ),
+                remediation={
+                    "preferred": (
+                        "Read the source message with get_email_by_id to confirm it has a body. A "
+                        "message whose content Mail cannot read has nothing for the verifier to "
+                        "prove the quote against."
+                    ),
+                    "script_output": result,
+                },
+            )
+        )
+    return serialize_tool_error(
+        ToolError(
+            code="REPLY_NOT_COMPLETED",
+            message=(
+                "The reply compose script did not report success, so there is no draft to describe. "
+                "The script's own message is preserved verbatim under remediation.script_output."
+            ),
+            remediation={
+                "preferred": (
+                    "Read script_output: it is Mail's own failure text, most often that no message "
+                    "matched message_id within recent_days. Widen recent_days or re-resolve the id "
+                    "with search_emails, then retry."
+                ),
+                "script_output": result,
             },
         )
     )

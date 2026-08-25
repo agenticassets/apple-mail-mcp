@@ -13,6 +13,10 @@ from apple_mail_mcp.tools.compose.attachment_draft_verification import (
     marker_draft_verification_handlers,
     verify_standalone_attachment_readiness,
 )
+from apple_mail_mcp.tools.compose.clipboard_scripts import (
+    pasteboard_restore_script,
+    pasteboard_snapshot_script,
+)
 from apple_mail_mcp.tools.compose.helpers import (
     _check_open_compose_window_cap,
     _clean_applescript_error,
@@ -137,9 +141,9 @@ set htmlString to do shell script "cat " & quoted form of "{html_temp_path}"
 set pb to current application's NSPasteboard's generalPasteboard()
 set temporarySubjectMarker to "{temporary_subject_marker}"
 
--- Save current clipboard for restoration
-set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
-
+-- Save the whole clipboard for restoration: every item, every flavor. Reading
+-- only the text flavor silently discarded a copied image or file.
+{pasteboard_snapshot_script()}
 pb's clearContents()
 set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
 pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
@@ -190,10 +194,7 @@ try
     do shell script "rm -f " & quoted form of "{html_temp_path}"
 
     -- Step 6: Restore clipboard
-    if oldClip is not missing value then
-        pb's clearContents()
-        pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-    end if
+    {pasteboard_restore_script()}
 
     return "{success_text}"{draft_id_output_script}
 on error errMsg
@@ -245,7 +246,7 @@ end try
             temp_path.unlink()
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Compose Email")
 @inject_preferences
 def compose_email(
     account: str | None = None,

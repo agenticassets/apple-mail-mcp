@@ -21,21 +21,41 @@ hook in `.claude/hooks/dev_mode_reminder.sh` reflects the same map.
 
 | If the diff touched… | Use |
 |----------------------|-----|
-| AppleScript inside Python f-strings (`tools/*/` packages, `core/` package) | The `.claude/hooks/check_applescript_compiles.py` parse check fires automatically on edit. Live-verify on TU Exchange (`apple-mail awaiting-reply --account "TU - Cayman" --days 7 --limit 5`) before ship. |
+| AppleScript inside Python f-strings (`tools/*/` packages, `core/` package) | The `.claude/hooks/check_applescript_compiles.py` parse check fires automatically on edit. Live-verify before ship against the **production test account** named in [`tasks/CLAUDE.md`](../../../tasks/CLAUDE.md) § Production test account — see the **live-verification rule** below the table. |
 | Perf-sensitive paths (`tools/smart_inbox/`, `tools/analytics/`, large-inbox loops) | `python-performance-optimization` skill |
 | Timeout subdivision, retry/backoff, `AppleScriptTimeout` handling | `python-resilience` skill |
 | Silent `except` / `on error` skips, `errors[]` surfacing, partial-failure JSON | `python-error-handling` skill |
 | New tests, missing test coverage, parser-vs-script gaps | `testing-python` or `python-testing-patterns` skill |
 | `asyncio` fan-out, `asyncio.run()`-in-loop bugs | `async-python-patterns` skill |
 | Pre-ship review pass | `reviewing-code` + `code-review` skills; `python-anti-patterns` as checklist |
-| Confirming a change actually works in the running app | `verify` + `run` skills |
+| Confirming a change actually works in the running app | `run` skill, then the live-CLI procedure in [`docs/AGENT_LIVE_TESTING.md`](../../../docs/AGENT_LIVE_TESTING.md) |
 | Plugin manifest / marketplace / MCPB drift | `plugin-dev:plugin-validator` agent (REQUIRED; step 1 below) |
 | `plugin/skills/*/SKILL.md` wording or triggers | `plugin-dev:skill-reviewer` agent |
+
+### Live-verification rule (an empty result is not a pass)
+
+Verify against an account that is **currently reachable**. Set
+`DEFAULT_MAIL_ACCOUNT` to the production test account documented in
+[`tasks/CLAUDE.md`](../../../tasks/CLAUDE.md) § Production test account, confirm
+it is live, then run a bounded check:
+
+```bash
+.venv/bin/apple-mail accounts --json                     # confirm the account is present and reachable
+.venv/bin/apple-mail awaiting-reply --account "$DEFAULT_MAIL_ACCOUNT" --days 7 --limit 5
+```
+
+**A zero-row result from an unreachable account is NOT a pass.** A retired or
+disconnected account (the former TU Exchange mailbox is the known example — that
+server access has ended and it is no longer reachable) returns a confident empty
+result that looks identical to "the AppleScript ran and found nothing." Never
+verify against it: a gate that cannot fail is worse than no gate. Require the
+account to appear in `apple-mail accounts` **and** the check to return real rows
+before calling AppleScript changes verified.
 
 ## Out of scope
 
 - New feature implementation
-- Version bump across six files unless user explicitly requests a release
+- Version bump across the seven version files unless user explicitly requests a release
 - Force push or amending pushed commits
 
 ## Workflow
@@ -59,7 +79,7 @@ Finalize progress:
 
 ### 1. plugin-validator first (required)
 
-**Delegate immediately** to `plugin-dev:plugin-validator` (Task `subagent_type="plugin-validator"`). Do not run pytest or doc sweeps before this step completes.
+**Delegate immediately** to `plugin-dev:plugin-validator` (Task `subagent_type="plugin-dev:plugin-validator"` — the bare name `plugin-validator` is not a valid agent id). Do not run pytest or doc sweeps before this step completes.
 
 Prompt must include:
 
@@ -134,18 +154,19 @@ Update **only** what the code change still affects after step 1. Do not rewrite 
 | Planning / task artifacts | `tasks/todo.md`, `tasks/INDEX.md`, `tasks/active/` (see `tasks/CLAUDE.md` § Agent requirements) |
 | Test count | `tools/expected_test_count.txt` only (SSOT); after adding/removing tests run `PYTEST_ADDOPTS='' .venv/bin/pytest --collect-only tests` and update that file — dev-check fails on drift and prints the new number. Do not scatter counts in prose docs. |
 | Module line budget | After intentional splits: `python3 tools/validators/check_module_line_budget.py --write-baseline tests/fixtures/module_line_budget/baseline.json`; do not refresh merely to allow growth |
-| Tool count | Six version files only on release; always sync **claims**: `find plugin/apple_mail_mcp/tools -name '*.py' | xargs grep -h '^@mcp.tool' | wc -l` (recursive) vs `plugin.json`, marketplace, MCPB `tools[]` |
+| Tool count | The seven version files only on release; always sync **claims**: `find plugin/apple_mail_mcp/tools -name '*.py' | xargs grep -h '^@mcp.tool' | wc -l` (recursive — every tool surface is a package, so a flat `tools/*.py` glob silently returns 0) vs `plugin.json`, marketplace, MCPB `tools[]` |
 
-**CLAUDE.md hubs to spot-check** (stale cross-links or wrong counts):
+**Hub files to spot-check** (stale cross-links or wrong counts):
 
-- `CLAUDE.md` (root)
+- `AGENTS.md` (root, canonical) **and** `CLAUDE.md` (root) — these two have drifted before around the § Version bump / tool-count paragraph; diff them against each other, do not update only one
 - `plugin/docs/CLAUDE.md`, `plugin/apple_mail_mcp/CLAUDE.md`, `plugin/apple_mail_mcp/tools/CLAUDE.md`
 - `plugin/skills/CLAUDE.md`, `tests/CLAUDE.md`, `tools/CLAUDE.md`, `docs/CLAUDE.md`
 - `.claude-plugin/CLAUDE.md`, `apple-mail-mcpb/CLAUDE.md`, `tasks/CLAUDE.md`
 
 **Manifest rules** (see `tools/CLAUDE.md`):
 
-- Versions: `pyproject.toml`, `plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json` `plugins[0].version`, `server.json`, `apple-mail-mcpb/manifest.json`
+- Versions — **seven files**: `pyproject.toml`, `plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`, `plugin/.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json` `plugins[0].version`, `server.json`, `apple-mail-mcpb/manifest.json`
+- The Cursor manifest is enforced like the rest — `tools/validators/validate_manifests.py` checks `plugin/.cursor-plugin/plugin.json` `version`; omitting it fails the gate
 - Do **not** bump `metadata.version` in marketplace.json
 - MCPB `tools[]` names must match registered tool function names
 
@@ -219,9 +240,9 @@ If `HEAD` is on a protected branch (e.g. `main` with branch-protection rules), s
 
 ## Release note
 
-If shipping a version bump, bump all six version files together (root `CLAUDE.md` § Version bump), re-run plugin-validator, then `bash tools/gates/dev-check.sh release` (which rebuilds all three artifacts (`apple-mail-plugin.zip`, `apple-mail.plugin`, and the `.mcpb`) and runs the structural mcpb-unpack smoke plus the byte-parity check between the zip and `.plugin`).
+If shipping a version bump, bump all **seven** version files together (root `AGENTS.md` / `CLAUDE.md` § Version bump — `pyproject.toml`, the Claude, Codex, and **Cursor** plugin manifests, `.claude-plugin/marketplace.json` `plugins[0].version`, `server.json`, `apple-mail-mcpb/manifest.json`), re-run plugin-validator, then `bash tools/gates/dev-check.sh release` (which rebuilds all three artifacts (`apple-mail-plugin.zip`, `apple-mail.plugin`, and the `.mcpb`) and runs the structural mcpb-unpack smoke plus the byte-parity check between the zip and `.plugin`).
 
 ## Additional resources
 
-- Deep conventions: [docs/CLAUDE-conventions.md](../../docs/CLAUDE-conventions.md)
-- Live verification: [docs/AGENT_LIVE_TESTING.md](../../docs/AGENT_LIVE_TESTING.md)
+- Deep conventions: [docs/CLAUDE-conventions.md](../../../docs/CLAUDE-conventions.md)
+- Live verification: [docs/AGENT_LIVE_TESTING.md](../../../docs/AGENT_LIVE_TESTING.md)

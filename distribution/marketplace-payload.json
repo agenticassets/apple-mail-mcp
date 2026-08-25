@@ -15,7 +15,9 @@
     "ui/**",
     "skills/**",
     "requirements.lock",
-    "wheelhouse/**"
+    "wheelhouse/**",
+    "README.md",
+    "assets/**"
   ],
   "required": [
     ".claude-plugin/plugin.json",
@@ -29,7 +31,9 @@
     "ui/**",
     "skills/**",
     "requirements.lock",
-    "wheelhouse/**"
+    "wheelhouse/**",
+    "README.md",
+    "assets/**"
   ],
   "exclude": [
     "**/CLAUDE.md",

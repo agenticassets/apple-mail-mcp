@@ -78,7 +78,7 @@ def _resolve_exact_target(
     )
 
 
-@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS, title="Manage Calendars")
 @inject_preferences
 def manage_calendars(
     action: str = "create",

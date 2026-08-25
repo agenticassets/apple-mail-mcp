@@ -5,94 +5,22 @@ them. Keeping them here removes the largest AppleScript blocks from the tool
 module without touching any I/O or patched name.
 """
 
-from dataclasses import dataclass
-
-from apple_mail_mcp.tools.compose.constants import TYPING_CHUNK_SIZE, TYPING_INTER_CHUNK_DELAY
-from apple_mail_mcp.tools.compose.lookup_scripts import _compose_signature_script
+from apple_mail_mcp.tools.compose.constants import (
+    QUOTE_PROOF_UNAVAILABLE,
+    REPLY_ACCESSIBILITY_UNAVAILABLE,
+    TYPING_CHUNK_SIZE,
+    TYPING_INTER_CHUNK_DELAY,
+)
 from apple_mail_mcp.tools.compose.reply_draft_resolver_scripts import (
     _native_reply_draft_resolver_handlers_applescript,
     _native_reply_draft_resolver_script,
     _native_reply_draft_resolver_setup_script,
 )
+from apple_mail_mcp.tools.compose.reply_script_helpers import _reply_extra_output_lines
+from apple_mail_mcp.tools.compose.reply_subject_scripts import native_reply_subject_helpers_applescript
 from apple_mail_mcp.tools.compose.reply_window_identity_scripts import native_reply_identity_tweak_script
 from apple_mail_mcp.tools.compose.reply_window_scripts import native_reply_window_handlers_applescript
 from apple_mail_mcp.tools.compose.typing_scripts import build_chunked_typing_handler
-
-
-@dataclass(frozen=True)
-class _ReplyModePlan:
-    header_text: str
-    post_action: str
-    success_text: str
-
-
-def _reply_mode_plan(effective_mode: str) -> _ReplyModePlan:
-    """Return mode-specific output and Mail action script for replies."""
-    if effective_mode == "send":
-        return _ReplyModePlan("SENDING REPLY", "send replyMessage", "Reply sent successfully!")
-    if effective_mode == "open":
-        return _ReplyModePlan(
-            "OPENING REPLY FOR REVIEW",
-            """
-        save replyMessage
-        delay 0.8
-        activate
-        """,
-            "Reply opened in Mail for review. Edit and send when ready.",
-        )
-    return _ReplyModePlan(
-        "SAVING REPLY AS DRAFT",
-        """
-        save replyMessage
-        delay 1.0
-        """,
-        "Reply saved as draft!",
-    )
-
-
-def _reply_command_options(effective_mode: str, reply_to_all: bool) -> tuple[str, str]:
-    """Return Mail `reply` command options and any required settle delay."""
-    if effective_mode == "open":
-        reply_options = "with opening window"
-        if reply_to_all:
-            reply_options += " and reply to all"
-        return reply_options, "delay 0.6"
-    if reply_to_all:
-        return "with reply to all", ""
-    return "", ""
-
-
-def _reply_signature_script(
-    resolved_signature_name: str | None,
-    *,
-    include_signature: bool,
-) -> str:
-    """Return reply-specific signature AppleScript."""
-    if resolved_signature_name:
-        return _compose_signature_script("replyMessage", resolved_signature_name)
-    if not include_signature:
-        return "set message signature of replyMessage to missing value"
-    return ""
-
-
-def _reply_extra_output_lines(
-    *,
-    safe_cc: str,
-    safe_bcc: str,
-    safe_attachment_info: str,
-    has_cc: bool,
-    has_bcc: bool,
-    has_attachments: bool,
-) -> str:
-    """Build optional status lines appended to native reply output."""
-    lines: list[str] = []
-    if has_cc:
-        lines.append(f'set outputText to outputText & "CC: {safe_cc}" & return')
-    if has_bcc:
-        lines.append(f'set outputText to outputText & "BCC: {safe_bcc}" & return')
-    if has_attachments:
-        lines.append(f'set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return')
-    return "\n        ".join(lines)
 
 
 def _build_reply_objectmodel_applescript(
@@ -236,70 +164,6 @@ def _native_reply_draft_window_close_script() -> str:
     """
 
 
-def _native_reply_subject_helpers_applescript() -> str:
-    """AppleScript handlers that collapse leading Re:/Fwd: prefixes for guard compares.
-
-    Mail normalizes compose-window titles (e.g. ``RE:  Re: Foo`` → ``Re: Foo``).
-    Exact string equality against the raw source subject is a false focus failure;
-    compare subject cores instead, and prefer Mail's live front-window title.
-    """
-    return """
-on stripLeadingSpaces(rawText)
-    set t to rawText as string
-    repeat while t starts with " "
-        if (length of t) is 1 then return ""
-        set t to text 2 thru -1 of t
-    end repeat
-    return t
-end stripLeadingSpaces
-
-on stripReplySubjectPrefixes(rawSubject)
-    set t to my stripLeadingSpaces(rawSubject)
-    repeat 10 times
-        if t is "" then exit repeat
-        set prefixLen to 0
-        ignoring case
-            if t starts with "re:" then
-                set prefixLen to 3
-            else if t starts with "fwd:" then
-                set prefixLen to 4
-            else if t starts with "fw:" then
-                set prefixLen to 3
-            end if
-        end ignoring
-        if prefixLen is 0 then exit repeat
-        if (length of t) is less than or equal to prefixLen then
-            set t to ""
-            exit repeat
-        end if
-        set t to my stripLeadingSpaces(text (prefixLen + 1) thru -1 of t)
-    end repeat
-    return t
-end stripReplySubjectPrefixes
-
-on subjectCoresMatch(leftSubject, rightSubject)
-    set leftCore to my stripReplySubjectPrefixes(leftSubject)
-    set rightCore to my stripReplySubjectPrefixes(rightSubject)
-    if leftCore is "" or rightCore is "" then return false
-    ignoring case
-        return (leftCore is rightCore)
-    end ignoring
-end subjectCoresMatch
-
-on looksLikeReplyWindowTitle(windowTitle)
-    set t to my stripLeadingSpaces(windowTitle)
-    if t is "" then return false
-    ignoring case
-        if t starts with "re:" then return true
-        if t starts with "fwd:" then return true
-        if t starts with "fw:" then return true
-    end ignoring
-    return false
-end looksLikeReplyWindowTitle
-
-"""
-
-
 def _build_reply_native_window_applescript(
     *,
     header_text: str,
@@ -343,7 +207,10 @@ def _build_reply_native_window_applescript(
     subject core matches the derived reply subject (Mail normalizes duplicate
     Re:/Fwd: prefixes). The keystroke itself still requires exact title equality
     against that adopted ``replySubject``. An empty System Events title is
-    tolerated (AX quirk); a different non-empty SE title aborts without typing.
+    tolerated (AX quirk); a different non-empty SE title aborts without typing;
+    and a System Events call that never answered at all (a missing Accessibility
+    grant) aborts as ``GUARD_ABORT`` carrying the underlying error in its detail,
+    rather than reading as agreement or escaping as an unstructured error.
     The same exact-title-or-empty check runs again before EVERY chunk (not just
     once before the loop), so a focus loss mid-typing aborts immediately instead
     of leaking chunks into whatever now holds focus; the abort discards the
@@ -365,7 +232,7 @@ def _build_reply_native_window_applescript(
     draft_resolver_setup_script = _native_reply_draft_resolver_setup_script() if mode != "send" else ""
     draft_resolver_script = _native_reply_draft_resolver_script() if mode != "send" else ""
     draft_window_close_script = _native_reply_draft_window_close_script() if mode == "draft" else ""
-    subject_helpers = _native_reply_subject_helpers_applescript()
+    subject_helpers = native_reply_subject_helpers_applescript()
     window_handlers = native_reply_window_handlers_applescript()
     typing_handler = build_chunked_typing_handler(
         chunk_size=TYPING_CHUNK_SIZE,
@@ -385,16 +252,24 @@ set replyWindowId to ""
 set preReplyWindowIds to missing value
 set replyDraftId to ""
 set replyDraftRfcMessageId to ""
+set replyDraftSourceRfcMessageId to ""
 set replyDraftIdentityEvidence to ""
+-- Only the draft/open resolver setup assigns this. mode="send" omits that
+-- fragment, and the capsule line that reads it is already gated on a non-empty
+-- replyDraftId, but an unassigned variable is one edit away from a runtime
+-- -2753 in the success path, so initialize it unconditionally.
+set sourceRfcMessageId to ""
 set quotedNeedle to ""
 set didType to false
 set typingInterruptedDetail to ""
 set guardMail to "(unset)"
 set guardMailWindowId to "(unset)"
 set guardSE to "(unset)"
+set guardSEAnswered to false
 set composeFocusVerified to false
 set editorFocusResult to ""
 set replyWindowRaised to false
+set frontmostBlockedBy to ""
 
 try
     tell application "Mail"
@@ -411,24 +286,33 @@ try
         set sourceSubject to subject of foundMessage as string
         set sourceSender to sender of foundMessage as string
         -- Sender-only attribution can occur in a body/signature; require a source-body anchor.
+        -- Prefer a paragraph long enough to be distinctive, but never refuse a reply
+        -- just because the source is short: "Thanks!" and "Approved." are ordinary
+        -- emails, and a short anchor still proves the quoted source content is there.
+        -- The cap is 60 characters, not a full paragraph: the anchor has to survive
+        -- Mail re-wrapping the quoted original, and a paragraph's first 60 characters
+        -- sit before any wrap point while a 160-character span straddles one.
         set sourceQuoteAnchor to ""
+        set sourceQuoteFallback to ""
         try
             set sourceContent to content of foundMessage as string
             repeat with sourceParagraph in paragraphs of sourceContent
                 set candidateQuoteText to contents of sourceParagraph as string
-                if (count of characters of candidateQuoteText) >= 16 then
-                    if (count of characters of candidateQuoteText) > 160 then
-                        set sourceQuoteAnchor to text 1 thru 160 of candidateQuoteText
-                    else
-                        set sourceQuoteAnchor to candidateQuoteText
-                    end if
+                set candidateQuoteLength to count of characters of candidateQuoteText
+                if candidateQuoteLength > 60 then set candidateQuoteText to text 1 thru 60 of candidateQuoteText
+                if candidateQuoteLength >= 16 then
+                    set sourceQuoteAnchor to candidateQuoteText
                     exit repeat
+                end if
+                if sourceQuoteFallback is "" and my stripLeadingSpaces(candidateQuoteText) is not "" then
+                    set sourceQuoteFallback to candidateQuoteText
                 end if
             end repeat
         end try
+        if sourceQuoteAnchor is "" then set sourceQuoteAnchor to sourceQuoteFallback
         if sourceQuoteAnchor is "" then
             {cleanup_script}
-            return "QUOTE_PROOF_UNAVAILABLE" & return & "Detail: source content has no usable quote anchor"
+            return "{QUOTE_PROOF_UNAVAILABLE}" & return & "Detail: source content has no usable quote anchor"
         end if
         if sourceSubject starts with "Re:" or sourceSubject starts with "RE:" or sourceSubject starts with "re:" then
             set derivedReplySubject to sourceSubject
@@ -437,6 +321,25 @@ try
         end if
         set replySubject to derivedReplySubject
         set replyBodyText to do shell script "cat " & quoted form of bodyTempPath
+        -- Bring Mail to the front *before* the reply command, not just after:
+        -- the compose window should open into an already-frontmost app so the
+        -- adoption scan and the focus guard below start from a settled front.
+        -- Diagnostic only here -- a failure is reported by the guard, which is
+        -- where a background Mail actually becomes fatal.
+        set frontmostBlockedBy to my frontmostBlockedApp(my ensureMailFrontmost())
+        -- Preflight the Accessibility bridge *before* opening a compose window.
+        -- Typing needs System Events to see Mail's windows; when it cannot, every
+        -- later step is doomed, and finding that out after the `reply` command
+        -- costs a leaked compose window plus four focus attempts, then reports it
+        -- as a focus problem. Only a successful count of exactly 0 aborts here --
+        -- "unknown" means the probe itself failed and is left to the guard.
+        if replyBodyText is not "" then
+            set axWindowCount to my accessibilityWindowCount()
+            if axWindowCount is "0" then
+                {cleanup_script}
+                return "{REPLY_ACCESSIBILITY_UNAVAILABLE}" & return & "Detail: System Events reports 0 windows for Mail"
+            end if
+        end if
         set preReplyWindowIds to my mailWindowIdSnapshot()
 
         -- Native Mail reply: Mail builds its own rich quoted thread and inserts the
@@ -479,20 +382,49 @@ try
 
     -- Guard the exact Mail window id, then focus its AX editor before typing.
     repeat with guardAttempt from 1 to 4
+        -- Window adoption is the guard's precondition, not one of its inputs:
+        -- mailOk below compares the front window's id against replyWindowId, and
+        -- an empty id matches neither a numeric id nor the "(unset)" no-window
+        -- answer. All four attempts are therefore doomed before the first one
+        -- runs, so spending ~6s of raise/focus/settle delays on them only delays
+        -- an abort that is already certain -- and reports it as a focus problem,
+        -- sending the caller back to "retry with Mail visible" when the real
+        -- cause is that Mail's new window could not be told apart from the ones
+        -- already open.
+        if replyWindowId is "" then
+            set editorFocusResult to "could not identify the reply window Mail just opened; window adoption found no unique new window matching the reply subject"
+            exit repeat
+        end if
         set guardMail to "(unset)"
         set guardMailWindowId to "(unset)"
         set guardSE to "(unset)"
+        set guardSEAnswered to false
         tell application "Mail"
             set replyWindowRaised to my raiseNativeReplyWindowSafely(replyWindowId, replySubject, derivedReplySubject)
         end tell
         delay 0.3
+        -- Re-assert the front on every attempt. Raising the window inside Mail
+        -- does not make Mail the frontmost *application*, and anything the user
+        -- (or another automation) does between attempts can take the front back.
+        set frontmostBlockedBy to my frontmostBlockedApp(my ensureMailFrontmost())
         tell application "System Events"
             tell process "Mail"
-                set frontmost to true
-                delay 0.3
-                delay 0.3
+                -- Without an Accessibility grant this whole block throws, which
+                -- used to escape as a generic "Error:" instead of the documented
+                -- REPLY_WINDOW_FOCUS_FAILED. Catch it, name it in the abort
+                -- detail, and let the guard fail closed on its own terms.
                 try
-                    set guardSE to name of front window
+                    set frontmost to true
+                    delay 0.6
+                    -- "" is a real answer: compose windows legitimately report an
+                    -- empty AX title. "(unset)" means System Events never answered.
+                    set guardSE to ""
+                    set guardSEAnswered to true
+                    try
+                        set guardSE to name of front window
+                    end try
+                on error systemEventsErrMsg
+                    set guardSE to "SystemEventsError:" & systemEventsErrMsg
                 end try
             end tell
         end tell
@@ -510,13 +442,18 @@ try
             end if
         end tell
         set mailOk to (guardMail is replySubject and guardMailWindowId is replyWindowId)
-        set seOk to (guardSE is replySubject or guardSE is "" or guardSE is "(unset)")
+        set seOk to (guardSEAnswered and (guardSE is replySubject or guardSE is ""))
         if mailOk and seOk then
-            set editorFocusResult to my focusReplyBodyEditor(replySubject, derivedReplySubject, replyWindowId)
+            -- Resolve the body editor once and hand the reference to the typing
+            -- pass. item 1 is the diagnostic status the abort path reports; item 2
+            -- is the resolved element, which spares typeReplyBodyChunks a second
+            -- ``entire contents`` walk of this compose window.
+            set editorFocusOutcome to my resolveReplyBodyEditor(replySubject, derivedReplySubject, replyWindowId, true)
+            set editorFocusResult to item 1 of editorFocusOutcome
             if editorFocusResult is "focused" then
                 set composeFocusVerified to true
                 if replyBodyText is not "" then
-                    set typeChunksResult to my typeReplyBodyChunks(replyBodyText, replySubject, derivedReplySubject, replyWindowId)
+                    set typeChunksResult to my typeReplyBodyChunks(replyBodyText, replySubject, derivedReplySubject, replyWindowId, item 2 of editorFocusOutcome)
                     if typeChunksResult is "typed" then
                         set didType to true
                     else
@@ -538,6 +475,17 @@ try
             if typingInterruptedDetail is not "" then
                 set abortCode to "TYPING_INTERRUPTED"
                 set abortDetailText to typingInterruptedDetail
+            else if frontmostBlockedBy is not "" then
+                -- Checked before the window/focus branches: when another app
+                -- held the front, window adoption and AX focus were both being
+                -- asked of a background Mail, so their failures are symptoms.
+                -- Reporting the symptom sends the caller to "grant
+                -- Accessibility" when the real fix is "stop stealing the front".
+                set abortCode to "GUARD_ABORT_FRONTMOST"
+                set abortDetailText to "Mail could not be brought to the front; " & frontmostBlockedBy & " held it"
+            else if replyWindowId is "" then
+                set abortCode to "GUARD_ABORT_WINDOW"
+                set abortDetailText to editorFocusResult
             else if editorFocusResult is not "" then
                 set abortDetailText to editorFocusResult
             else if guardMail is not "(unset)" and guardMail is not "" then
@@ -547,14 +495,41 @@ try
                     end if
                 end if
             end if
-            my closeNativeReplyWindowSafely(replyWindowId, replySubject, derivedReplySubject)
+            if (my closeNativeReplyWindowSafely(replyWindowId, replySubject, derivedReplySubject)) is false then
+                -- The id-and-title close cannot fire without an adopted window,
+                -- which is exactly the case that reaches here, so the compose
+                -- window Mail just opened would be orphaned and every retry would
+                -- leak another one. MAX_OPEN_COMPOSE_WINDOWS exists because
+                -- NSWindowServer OOMs once enough accumulate. The outgoing message
+                -- Mail returned from `reply` is an unambiguous handle on our own
+                -- compose -- unlike a title match, it can never resolve to a window
+                -- the user opened -- so closing by it is safe where a title match is
+                -- not. Probed on Darwin 25.5: `close <outgoing message> saving no`
+                -- closes the window and discards it unsaved. Guarded anyway, so a
+                -- Mail build that refuses it leaves us exactly where we already were.
+                tell application "Mail"
+                    try
+                        close replyMessage saving no
+                    on error closeErrorText
+                        -- Swallowing this would report an abort that cleaned up
+                        -- after itself while a compose window is still on screen,
+                        -- and the caller's next retry would add another. Say so in
+                        -- the detail the abort already returns.
+                        set abortDetailText to abortDetailText & " [reply window left open: " & closeErrorText & "]"
+                    end try
+                end tell
+            end if
             {cleanup_script}
             return abortCode & return & "Subject: " & replySubject & return & "DerivedSubject: " & derivedReplySubject & return & "Detail: " & abortDetailText & " (mailFront=" & guardMail & " seFront=" & guardSE & ")"
     end if
     -- Pair the source attribution with actual source content. A bare
     -- ``wrote:`` or even sender-only attribution can occur in an authored
-    -- body/signature and would falsely certify a lost native quote.
-    set quotedNeedle to sourceSender & " wrote:" & return & sourceQuoteAnchor
+    -- body/signature and would falsely certify a lost native quote. The two
+    -- halves travel as SEPARATE output fields: the reader is line-based
+    -- (``_extract_output_field``), so a single field holding an embedded
+    -- return delivered only its first line -- the attribution -- and silently
+    -- dropped the source-content half this pairing exists to supply.
+    set quotedNeedle to sourceSender & " wrote:"
     delay 0.4
     tell application "Mail"
         -- Adding attachments before body typing can make Mail rebuild the rich
@@ -578,8 +553,9 @@ try
         set outputText to outputText & "To: native reply recipients" & return
         set outputText to outputText & "Subject: " & replySubject & return
         if replyDraftId is not "" then set outputText to outputText & "Draft ID: " & replyDraftId & return
-        if replyDraftId is not "" and replyDraftIdentityEvidence is not "" then set outputText to outputText & "Draft Identity: " & replyDraftId & "|||" & replyDraftRfcMessageId & "|||" & sourceRfcMessageId & "|||" & replyDraftIdentityEvidence & return
+        if replyDraftId is not "" and replyDraftIdentityEvidence is not "" then set outputText to outputText & "Draft Identity: " & replyDraftId & "|||" & replyDraftRfcMessageId & "|||" & replyDraftSourceRfcMessageId & "|||" & replyDraftIdentityEvidence & return
         if quotedNeedle is not "" then set outputText to outputText & "Quote Needle: " & quotedNeedle & return
+        if sourceQuoteAnchor is not "" then set outputText to outputText & "Quote Anchor: " & sourceQuoteAnchor & return
         {extra_output_lines}
 
         {cleanup_script}

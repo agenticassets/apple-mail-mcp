@@ -21,7 +21,7 @@ from apple_mail_mcp.tools.search.dispatch import _search_mail_records
 from apple_mail_mcp.tools.search.records import _body_scan_disabled_error, _build_search_response
 
 
-@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS, title="Search Emails")
 @inject_preferences
 async def search_emails(
     account: str | None = None,

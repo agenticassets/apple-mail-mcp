@@ -187,7 +187,9 @@ get_mailbox_unread_counts(summary_only=True)
    - Mark read all automated reports (they're old news now)
    - Archive all meeting invites that already happened
    ```
-   search_emails(date_to="2025-01-15")  # Before you returned
+   # Pass date_from with date_to. A bare date_to keeps the default recent_days
+   # window (last 48h), which starts AFTER a past date_to, so it returns nothing.
+   search_emails(date_from="2025-01-01", date_to="2025-01-15")  # While you were away
    # Review and bulk archive/delete
    ```
 

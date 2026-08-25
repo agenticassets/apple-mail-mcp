@@ -36,15 +36,16 @@ from manifest_checks.artifacts import (
     _compare_zip_members,
 )
 from manifest_checks.codex import _check_codex_plugin_contract
-from manifest_checks.cursor import _check_cursor_plugin_contract
 from manifest_checks.common import (
     _check_tool_count_claim,
     _env_truthy,
     _json_field,
 )
+from manifest_checks.cursor import _check_cursor_marketplace_catalog, _check_cursor_plugin_contract
 from manifest_checks.install_contracts import (
     _check_developer_only_skills_not_packaged,
     _check_marketplace_contract,
+    _check_mcpb_directory_contract,
     _check_mcpb_runtime_contract,
     _check_plugin_manifest_contract,
     _check_python_package_contract,
@@ -76,9 +77,11 @@ __all__ = [
     "_check_artifact_freshness",
     "_check_changelog_release_version",
     "_check_codex_plugin_contract",
+    "_check_cursor_marketplace_catalog",
     "_check_cursor_plugin_contract",
     "_check_developer_only_skills_not_packaged",
     "_check_marketplace_contract",
+    "_check_mcpb_directory_contract",
     "_check_mcpb_runtime_contract",
     "_check_module_line_budget",
     "_check_no_directory_entries",
@@ -178,10 +181,12 @@ def main() -> None:
     _check_marketplace_contract(expected_version, errors)
     _check_codex_plugin_contract(expected_version, actual_count, errors)
     _check_cursor_plugin_contract(expected_version, actual_count, errors)
+    _check_cursor_marketplace_catalog(actual_count, errors)
 
     mcpb = json.loads((common.ROOT / "apple-mail-mcpb/manifest.json").read_text(encoding="utf-8"))
     _check_tool_count_claim(mcpb.get("description"), "mcpb manifest description", actual_count, errors)
     _check_mcpb_runtime_contract(mcpb, errors)
+    _check_mcpb_directory_contract(mcpb, errors)
 
     mcpb_names = [tool["name"] for tool in mcpb.get("tools", [])]
     if len(mcpb_names) != actual_count:

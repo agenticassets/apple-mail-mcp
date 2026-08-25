@@ -114,7 +114,7 @@ Use zero-padded numbers and stable slug names so Phase 2 maps 1:1 to reports.
 
 - Prefer **one authoritative home** for a rule; link elsewhere (dedupe parent vs module docs).
 - Replace brittle fixed counts with **pointers to canonical helpers** or modules (never `"N agents"`, `"N skills"`, or version snapshots in guidance).
-- **Skill/agent IDs — do not swap on weak evidence.** Missing from `.claude/skills/` alone is not enough. Check `.agents/skills/`, plugin marketplaces, Cursor plugin cache, and agent frontmatter before changing `resend`, `email-best-practices`, `tailwind-v4-shadcn`, or IDs listed on `supabase-expert` / `resend-email-expert` Only replace when **proven** removed (e.g. documented registry deletion, file deleted, upstream rename). When unsure, **skip** and log deferred — do not substitute a local-only skill.
+- **Skill/agent IDs — do not swap on weak evidence.** Missing from `.claude/skills/` alone is not enough. Check `.agents/skills/` (the canonical home; `.claude/skills/` is a symlink), plugin marketplaces, the host's installed-plugin cache, and agent frontmatter before changing any skill or agent id. Only replace when **proven** removed (e.g. documented registry deletion, file deleted, upstream rename). When unsure, **skip** and log deferred — do not substitute a local-only skill.
 - Add **banners** for superseded docs; link to current strategy or index — do not rewrite historical body text unless asked.
 - For modular strategy or policy docs: fix **links and navigation** only unless the user asked to rewrite content.
 

@@ -21,7 +21,7 @@ _ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 _ATTACHMENT_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Export Emails")
 @inject_preferences
 def export_emails(
     account: str | None = None,

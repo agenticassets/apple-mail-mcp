@@ -153,6 +153,8 @@ range_results = search_emails(
 )
 ```
 
+**Always pass `date_from` with `date_to`.** `date_to` alone does not open the window backwards: when `date_from` is omitted, `search_emails` fills it from `recent_days` (default 2.0, so "two days ago"), and a `date_to` in the past then ends the window before it starts. The call succeeds and returns an empty result that looks like "no matches".
+
 Date-only and status-only queries can still produce many candidates. Every `search_emails` call scans at most 50 messages regardless of `limit`; page with `offset` for a wider date range. Review result counts and ids before any mutation.
 
 ## Attachment Discovery

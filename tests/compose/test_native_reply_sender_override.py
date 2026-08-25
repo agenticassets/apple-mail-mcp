@@ -81,7 +81,7 @@ def _saved_native_reply_output(*, draft_id: str = "84053") -> str:
             "To: native reply recipients",
             "Subject: Re: Test",
             f"Draft ID: {draft_id}",
-            f"Draft Identity: {draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>",
+            f"Draft Identity: {draft_id}|||<draft-{draft_id}@example.com>|||<source@example.com>|||rfc",
             "Quote Needle: On Today, Sender <sender@example.com> wrote:",
             "",
         ]

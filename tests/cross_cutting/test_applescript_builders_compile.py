@@ -34,8 +34,8 @@ are not standalone scripts.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
-import os
 import shutil
 import subprocess
 import tempfile
@@ -133,10 +133,10 @@ def _osacompile_check(script: str) -> tuple[bool, str]:
         return True, ""
     finally:
         for p in (src_path, out_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+            # osacompile leaves no .scpt behind when it rejects the source, so
+            # a missing output file is the normal failure path, not an error.
+            with contextlib.suppress(OSError):
+                Path(p).unlink()
 
 
 def _collect_full_script_builders(module) -> list[tuple[str, callable]]:
@@ -295,8 +295,13 @@ class OsacompileAvailableTests(unittest.TestCase):
         )
 
         self.assertIn("on chunkFocusBlockedName(expectedTitle, derivedTitle, expectedWindowId)", script)
-        self.assertIn("on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId)", script)
-        self.assertIn("on focusReplyBodyEditor(expectedTitle, derivedTitle, expectedWindowId)", script)
+        self.assertIn(
+            "on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId, preResolvedEditor)",
+            script,
+        )
+        self.assertIn(
+            "on resolveReplyBodyEditor(expectedTitle, derivedTitle, expectedWindowId, allowEditorClick)", script
+        )
         self.assertIn("key up shift", script)
         ok, err = _osacompile_check(script)
         self.assertTrue(
@@ -305,6 +310,113 @@ class OsacompileAvailableTests(unittest.TestCase):
             f"{err}\n\n"
             "Fix the generated native reply script before relying on tests.",
         )
+
+    def test_reply_builders_compile_across_modes_and_optional_fragments(self):
+        """Compile both reply builders for every mode and optional-fragment mix.
+
+        The generic discovery pass above calls each builder once, with a single
+        sample ``mode``. That leaves whole branches of the native script — the
+        ``mode="send"`` variant, which omits the draft-resolver fragments, and
+        the ``mode="open"`` variant, which omits only the window-close fragment
+        — never compiled by any gate, even though every native reply the tool
+        sends takes one of them.
+
+        The optional fragments (``sender``, ``signature``, ``cc``, ``bcc``,
+        ``attachment``) are spliced in as text, so a syntax error inside one
+        surfaces whenever that fragment is present. Compiling each fragment in
+        isolation, plus all-off and all-on, localizes a failure to a single
+        fragment instead of reporting only that "the all-on script broke".
+
+        The fragment text comes from the real helpers ``reply_to_email`` uses,
+        not hand-written stand-ins, so this compiles what actually ships.
+        """
+        from apple_mail_mcp.tools.compose import reply as reply_module
+        from apple_mail_mcp.tools.compose import reply_script_helpers as helpers
+        from apple_mail_mcp.tools.compose import reply_scripts as m
+
+        cc_script, bcc_script, _, _ = reply_module._build_recipient_loops(
+            "cc@example.com",
+            "bcc@example.com",
+            message_var="replyMessage",
+        )
+        attachment_script = """
+                set theFile to POSIX file "/tmp/apple-mail-compile-check.pdf"
+                tell replyMessage
+                    make new attachment with properties {file name:theFile} at after the last paragraph of content
+                end tell
+                delay 1
+            """
+        optional_fragments = {
+            "sender": ('set sender of replyMessage to "sender@example.com"', "sender_script"),
+            "signature": (helpers._reply_signature_script("Work", include_signature=True), "signature_script"),
+            "cc": (cc_script, "cc_script"),
+            "bcc": (bcc_script, "bcc_script"),
+            "attachment": (attachment_script, "attachment_script"),
+        }
+        # all-off, each fragment alone, all-on
+        fragment_mixes: list[tuple[str, set[str]]] = [("none", set())]
+        fragment_mixes += [(name, {name}) for name in optional_fragments]
+        fragment_mixes.append(("all", set(optional_fragments)))
+
+        base = {
+            "header_text": "SAVING REPLY AS DRAFT",
+            "success_text": "Reply saved as draft!",
+            "safe_account": "Test Account",
+            "mailbox_lookup": 'set sourceMailbox to mailbox "Inbox" of targetAccount',
+            "lookup_script": "set foundMessage to missing value",
+            "not_found_message": "Email not found",
+            "body_temp_path": "/tmp/apple-mail-compile-check-body.txt",
+            "cleanup_script": 'do shell script "rm -f " & quoted form of "/tmp/apple-mail-compile-check-body.txt"',
+            "safe_cc": "cc@example.com",
+            "safe_bcc": "bcc@example.com",
+            "safe_attachment_info": "  /tmp/apple-mail-compile-check.pdf\n",
+        }
+
+        checked = 0
+        for mode in ("draft", "open", "send"):
+            mode_plan = helpers._reply_mode_plan(mode)
+            for reply_to_all in (False, True):
+                for mix_name, enabled in fragment_mixes:
+                    fragments = {
+                        param: (text if name in enabled else "")
+                        for name, (text, param) in optional_fragments.items()
+                    }
+                    flags = {
+                        "has_cc": "cc" in enabled,
+                        "has_bcc": "bcc" in enabled,
+                        "has_attachments": "attachment" in enabled,
+                    }
+                    native_options, _ = helpers._reply_command_options("open", reply_to_all)
+                    object_options, settle_delay = helpers._reply_command_options(mode, reply_to_all)
+                    variants = {
+                        "native": m._build_reply_native_window_applescript(
+                            mode=mode,
+                            reply_options=native_options,
+                            **base,
+                            **fragments,
+                            **flags,
+                        ),
+                        "objectmodel": m._build_reply_objectmodel_applescript(
+                            reply_options=object_options,
+                            reply_settle_delay=settle_delay,
+                            post_action=mode_plan.post_action,
+                            **base,
+                            **fragments,
+                            **flags,
+                        ),
+                    }
+                    for path, script in variants.items():
+                        with self.subTest(path=path, mode=mode, reply_to_all=reply_to_all, fragments=mix_name):
+                            ok, err = _osacompile_check(script)
+                            self.assertTrue(
+                                ok,
+                                f"\n\n{path} reply script rejected by osacompile "
+                                f"(mode={mode}, reply_to_all={reply_to_all}, fragments={mix_name}):\n{err}\n",
+                            )
+                        checked += 1
+
+        # 3 modes x 2 reply_to_all x 7 fragment mixes x 2 builders
+        self.assertEqual(checked, 84)
 
     # --- inbox builders ---
 

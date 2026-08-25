@@ -22,7 +22,9 @@ ALLOWED_ROOT_FILES = frozenset(
         "CHANGELOG.md",
         "CLAUDE.md",
         "LICENSE",
+        "PRIVACY.md",
         "README.md",
+        "SECURITY.md",
         "pyproject.toml",
         "server.json",
         "skills-lock.json",
@@ -56,6 +58,7 @@ ALLOWED_HIDDEN_DIRS = frozenset(
         ".claude-plugin",
         ".codex",
         ".cursor",
+        ".cursor-plugin",
         ".github",
         ".git",
     }

@@ -25,7 +25,9 @@ without rediscovering the release process.
    The Marketplace tool calculates the separate candidate payload digest.
 
 3. In a clean `chore/*` branch of the central Marketplace, run the printed
-   `prepare_plugin_update.py --plugin apple-mail --prepare --next-steps` command. Complete
+   command — currently `python3 tools/prepare_plugin_update.py --plugin apple-mail
+   --prepare --next-steps`, run from the Marketplace checkout root (that script
+   lives in the Marketplace repository, not in this one). Complete
    its candidate-specific evidence, admission, attestation, release gate, and
    reviewed PR steps there. Commit and push the candidate plus redacted proof
    files before admission, because its evidence URLs must be reachable from

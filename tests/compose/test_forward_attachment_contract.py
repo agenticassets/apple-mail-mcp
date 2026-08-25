@@ -252,6 +252,43 @@ def test_forward_marker_lookup_failure_enters_exact_object_cleanup() -> None:
     assert "delete forwardMessage" in script
 
 
+def test_subject_bind_excludes_rows_that_existed_before_the_save() -> None:
+    """A draft that predates this forward can never become the unique subject match.
+
+    ``Fwd: <subject>`` is exactly what a *previous* forward of the same message
+    left in Drafts. While the row this call just saved is still unindexed
+    (iCloud/Exchange lag), an unfiltered exact-subject scan sees only the OLD
+    draft and binds it — then fails the attachment proof against a message the
+    caller never named.
+    """
+    script = forward_marker_finalize_script("__forward_marker__", 'set forwardAttachmentProof to "verified"')
+
+    seed = "set preSaveForwardDraftIds to item 3 of preSaveDraftSnapshot"
+    assert seed in script
+    assert "set excludedDraftIds to preSaveForwardDraftIds" in script
+    # The subject test itself must be gated, not merely accompanied by the list.
+    assert (
+        "if candidateExistedBefore is false and (subject of candidateDraft as string) is fwdSubject then" in script
+    )
+    assert script.index(seed) < script.index("set excludedDraftIds to preSaveForwardDraftIds")
+
+
+def test_error_path_releases_a_subject_bound_row_instead_of_deleting_it() -> None:
+    """Subject equality is a locator, not proof of authorship — so never delete on it.
+
+    ``operation_exact_subject`` means the row merely had the right subject. The
+    cleanup handler used to ``delete markedForwardDraft`` unconditionally, which
+    on a misbind destroys a draft the user wrote on the same thread while
+    reporting only ``FORWARD_ATTACHMENT_PROOF_FAILED``.
+    """
+    script = forward_marker_finalize_script("__forward_marker__", 'set forwardAttachmentProof to "verified"')
+
+    release = 'if savedDraftIdSource is "operation_exact_subject" then set markedForwardDraft to missing value'
+    assert release in script
+    handler = script.index("on error errMsg")
+    assert handler < script.index(release) < script.index("delete markedForwardDraft", handler)
+
+
 @pytest.mark.skipif(shutil.which("osacompile") is None, reason="osacompile is not available")
 def test_forward_attachment_marker_fallback_applescript_compiles(attachment_file: Path) -> None:
     """The iCloud-specific marker transaction remains executable AppleScript."""

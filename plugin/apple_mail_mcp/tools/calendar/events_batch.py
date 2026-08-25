@@ -103,7 +103,7 @@ def _validate_item(item: dict[str, Any], index: int, batch_timezone: str | None)
     }
 
 
-@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS, title="Batch Create Events")
 @inject_preferences
 def batch_create_events(
     events: list[dict[str, Any]],

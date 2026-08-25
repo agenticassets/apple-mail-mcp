@@ -121,6 +121,29 @@ on accessibilityWindowCount()
     end try
 end accessibilityWindowCount
 
+on accessibilityWindowCountSettled(maxAttempts, settleDelay)
+    -- Same probe as accessibilityWindowCount, but a zero has to hold.
+    --
+    -- A zero is not self-evidently a broken bridge. Mail keeps its windows on
+    -- whichever Space it was launched into, and any full-screen app puts the
+    -- user on a different one; activating Mail then triggers a Space switch
+    -- whose animation Accessibility spends enumerating nothing. `frontmost`
+    -- goes true before that finishes, so the caller sees a settled front and a
+    -- window list that has not caught up. Measured ~0.3 s on Darwin 25.5, with
+    -- Mail's own dictionary reporting 8 windows the entire time.
+    --
+    -- Returns the first non-zero count, the last "unknown:<error>" (never
+    -- fatal -- a probe that cannot answer is left to the focus guard), or "0"
+    -- only after the count stayed zero for every attempt.
+    set lastCount to "0"
+    repeat with settleAttempt from 1 to maxAttempts
+        set lastCount to my accessibilityWindowCount()
+        if lastCount is not "0" then return lastCount
+        if settleAttempt is less than maxAttempts then delay settleDelay
+    end repeat
+    return lastCount
+end accessibilityWindowCountSettled
+
 on frontmostBlockedApp(frontmostResult)
     -- "" when Mail reached the front, and also when the answer was
     -- "unavailable:" -- a missing Accessibility grant is already reported on

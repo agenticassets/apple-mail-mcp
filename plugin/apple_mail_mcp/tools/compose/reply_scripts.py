@@ -6,6 +6,8 @@ module without touching any I/O or patched name.
 """
 
 from apple_mail_mcp.tools.compose.constants import (
+    AX_WINDOW_SETTLE_ATTEMPTS,
+    AX_WINDOW_SETTLE_DELAY,
     QUOTE_PROOF_UNAVAILABLE,
     REPLY_ACCESSIBILITY_UNAVAILABLE,
     TYPING_CHUNK_SIZE,
@@ -333,11 +335,30 @@ try
         -- costs a leaked compose window plus four focus attempts, then reports it
         -- as a focus problem. Only a successful count of exactly 0 aborts here --
         -- "unknown" means the probe itself failed and is left to the guard.
+        --
+        -- The zero has to *hold*: ensureMailFrontmost returns as soon as macOS
+        -- reports Mail frontmost, which happens before a Space transition has
+        -- finished animating, and Accessibility enumerates no windows until it
+        -- has. One sample inside that gap aborts a perfectly healthy reply.
         if replyBodyText is not "" then
-            set axWindowCount to my accessibilityWindowCount()
+            set axWindowCount to my accessibilityWindowCountSettled({AX_WINDOW_SETTLE_ATTEMPTS}, {AX_WINDOW_SETTLE_DELAY})
             if axWindowCount is "0" then
                 {cleanup_script}
-                return "{REPLY_ACCESSIBILITY_UNAVAILABLE}" & return & "Detail: System Events reports 0 windows for Mail"
+                -- Carry Mail's own window count alongside. The two together
+                -- separate "Mail genuinely has no windows" from "Accessibility
+                -- cannot see the windows Mail has", which is the difference
+                -- between opening a viewer and fixing the environment, and is
+                -- invisible from the Accessibility count alone.
+                set mailOwnWindowCount to "unknown"
+                try
+                    set mailOwnWindowCount to (count of windows) as string
+                on error mailCountErrMsg
+                    -- Same shape as accessibilityWindowCount's "unknown:<error>":
+                    -- a probe that cannot answer is itself part of the diagnosis,
+                    -- and this string is read by a human deciding what to fix.
+                    set mailOwnWindowCount to "unknown (" & mailCountErrMsg & ")"
+                end try
+                return "{REPLY_ACCESSIBILITY_UNAVAILABLE}" & return & "Detail: System Events reports 0 windows for Mail after " & {AX_WINDOW_SETTLE_ATTEMPTS} & " attempts; Mail's own scripting dictionary reports " & mailOwnWindowCount & " window(s)"
             end if
         end if
         set preReplyWindowIds to my mailWindowIdSnapshot()

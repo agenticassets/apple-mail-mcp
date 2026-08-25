@@ -57,3 +57,6 @@ tasks/mcporter-*-test-*.md
 *.tmp
 *.tmp.stdout
 *.tmp.stderr
+
+# uv is not used here (pip + .venv); a stray lock file fails validate_repo_root.py
+uv.lock

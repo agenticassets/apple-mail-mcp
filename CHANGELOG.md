@@ -38,6 +38,85 @@ behavior — see **Drafting hardening** below.
   README point at these files. Cowork and MCPB install steps in the README now
   link the latest GitHub Release instead of a local build.
 
+### Native reply: the truncation defect, and three the review found on top of it (2026-08-25)
+
+- **An Accessibility count of zero no longer aborts on a single sample.** The native-reply preflight
+  read Mail's window count once and refused on zero, with remediation naming a sleeping display or a
+  lapsed Accessibility grant. Measured on Darwin 25.5: Accessibility reports **0 windows for Mail
+  whenever Mail sits on a different Space** — which any full-screen app creates — while Mail's own
+  scripting dictionary reports 8 at the same moment, and `frontmost` reads true for ~0.3 s before the
+  Space transition finishes and the count catches up. A healthy reply aborted at 0.79 s inside that
+  gap. The count is now polled until a zero holds, the abort detail carries **Mail's own window count
+  beside the Accessibility one** (which is what separates "Mail has no window" from "Accessibility
+  cannot see Mail's windows"), and the remediation leads with the Space case instead of sending the
+  user to System Settings. It also no longer suggests restarting Mail, which never was the fix.
+- **The typed reply body is no longer truncated at save.** Every observed failure was a clean correct
+  prefix followed by Mail's quote, with no substitution anywhere — so autocorrect was not the cause.
+  Every cut also landed mid-chunk, not on a chunk boundary. `keystroke` returns when events are
+  posted rather than processed, and the typing loop skips its inter-chunk delay after the final
+  chunk, so the script went from the last keystroke straight to `save` and whatever WebKit had not
+  drained never reached the draft: 216 characters lost at chunk size 120, 433 at 160, on
+  2,400-character bodies. The loop now polls the editor's own `AXValue` before reporting success —
+  never fatal, since the case-sensitive verification against the saved draft still decides
+  correctness.
+- **That wait now scales with the body, and a flat one was the other half of the defect.** A flat 6 s
+  budget only moved the boundary: a 2,400-character body at chunk size 300 drained in time, while a
+  5,000-character body at the same chunk size saved a clean 3,179-character prefix and lost the
+  remaining 1,821. The identical run passed at a 50 s budget, so **the tail was late, not dropped** —
+  which is why waiting is the fix rather than retyping. The budget is computed from the body length
+  in AppleScript (so a retype pass re-scales) and mirrored in Python by
+  `constants.typing_settle_attempts()`, which `_native_reply_effective_timeout` now adds to its
+  projected timeout. Those two must agree: if the timeout were still projected from chunk-typing time
+  alone, `AppleScriptTimeout` could fire mid-drain and strand a partially typed compose window, which
+  is worse than the truncation being fixed. With the scaled budget, 5,000-character bodies and
+  signature-enabled bodies both pass, and chunk 200 — designated the positive control that "must
+  fail" — does not fail.
+- **`TYPING_CHUNK_SIZE` raised 120 → 300, and the constant's documented meaning is corrected.** Chunk
+  size was never a safety dial; it was a proxy for how much undrained text was still in flight at
+  save time, which is why every earlier sweep read it as causal. Once the drain is actually waited
+  for, the trade inverts: chunk 600 on a 2,400-character body failed three runs of four against the
+  small budget and *passed* against a large one, taking 72.6 s where chunk 300 takes 22.9 s. Bigger
+  chunks post events faster; the editor drains no faster, so the only thing they buy is a longer
+  wait. 400 and 500 also passed cleanly and are marginally faster, but each has a single observation
+  against 300's four. 300 ships because it is the fastest value whose evidence is deep enough to
+  trust, not because 500 is known to be unsafe. The earlier "cliff between 160 and 200" claim is
+  withdrawn; it was an artifact of a verifier matching each run against the previous run's draft.
+- **The drain wait could report success against the quoted original.** Its exit condition was
+  `editorText contains bodyTail` — and `contains` is positionless, while the compose editor is not
+  empty when typing starts: it already holds Mail's quoted original and the signature. So a reply on
+  a thread the user had replied to before, ending in the same sign-off that appears in the quote,
+  matched on the first poll and returned "drained" before a single character had landed. That is the
+  truncation the wait exists to prevent, it is deterministic, and the automatic retype reproduced it
+  and hard-failed. The tail is now cut from the body **before** typing and compared against the
+  pre-typing editor; if it is already present, that exit is disabled for the run and the wait falls
+  back to the length delta. An unreadable pre-typing probe disables it too — an unknown must never
+  buy a free early exit.
+- **The drain wait no longer scales down to nothing when the editor cannot be read.** When
+  Accessibility resolves an `AXWebArea` instead of an `AXTextArea`, `AXValue` reads throw, which
+  disabled the length baseline *and* ended the poll on its first attempt — a zero-length wait, i.e.
+  exactly the pre-fix behaviour, on precisely the windows whose accessibility tree is already
+  degraded. When the drain cannot be observed at all, the wait is now spent blind instead of skipped.
+  The degraded path therefore always pays the full budget where the observed path usually exits
+  early; that is deliberate, because the alternative is silent truncation.
+- **An explicit `timeout` is now floored at the projection instead of overriding it.** The drain
+  budget is computed inside the AppleScript from the body length and cannot see what the caller
+  granted, so `reply_to_email(..., timeout=60)` on a 2,400-character body — ample before this
+  release, when that body took ~23 s — now fires `AppleScriptTimeout` mid-drain and strands a typed,
+  unsaved compose window. The old remediation then told the caller to retry, which types the body
+  into a *second* window. An explicit value can now only raise the budget, never cut it below what
+  the script will actually spend, and the refusal cap bounds the result. The
+  `REPLY_BODY_TYPING_BUDGET_EXCEEDED` remediation no longer recommends passing a timeout, which had
+  become advice routing callers into the unguarded path.
+- **The Accessibility remediation stops asserting a diagnosis the reading cannot support.** It had
+  begun telling users that Mail-has-windows-but-Accessibility-sees-none is "not a permissions
+  problem". A sleeping or locked display produces a byte-identical reading, and so does a lapsed
+  grant. The Space case still leads, because it is the most common, but as the most likely of three
+  indistinguishable readings rather than a conclusion.
+- **The refusal cap admits 114,000 characters, not the 38,400 its comment claimed,** and roughly 100
+  s of the 480 s ceiling is now a poll bound rather than typing time. The comment is corrected, and
+  the region it does not cover is stated rather than implied: every measurement behind these
+  constants was taken at 2,400-5,000 characters, and the drain budget saturates at 6,259.
+
 ### Drafting hardening
 
 Adversarial review of the compose surface, weighted toward
@@ -63,26 +142,41 @@ failure reported as prose to a caller parsing JSON.
   Because a correction panel is an `NSPanel` and not an `AXSheet`, it is
   invisible to Accessibility: a clean AX window list is **not** evidence that no
   modal is up.
-- **`TYPING_CHUNK_SIZE` raised 80 → 160**, making a 2,400-character native reply
-  about 19% faster (39.0 s → 31.5 s) with no change in behavior. **If native
-  replies start failing `REPLY_BODY_MISMATCH`, set it to 120** — the pre-tested
-  fallback, verified 4/4 at ~33.9 s, one step further from the corruption cliff
-  and costing ~2.4 s. That fallback is documented at the top of the constant so
-  it is found from the failure, not from the changelog. The chosen value has no
-  *tested* margin below the cliff; the risk is accepted because the failure mode
-  is loud (the full-body verifier catches it) rather than a quietly wrong email.
-- **The sweep behind that change.** A controlled
-  sweep holding body length fixed and varying only chunk size found that larger
-  chunks corrupt the body. At 2,400 characters, sizes 200 and 250 failed
-  `REPLY_BODY_MISMATCH` on 4 of 4 runs, while 80, 120, and 160 verified on 9 of
-  9 — a cliff between 160 and 200, not a gradient. The failures were also
-  *slower* (69-71 s against 31-39 s), because a mismatch burns the retype path,
-  so the larger sizes are worse on both speed and safety. Larger chunks type
-  more text between panel dismissals, so a substitution lands before the
-  rejection does. At 1,200 characters every size passed, including 250: a short
-  body does not discriminate, and re-testing this needs at least 2,400
-  characters. Full sweep and the case for 120 as the only defensible change:
-  `tasks/active/native-reply/live-timing-and-frontmost-2026-08-24.md` § 4.
+- **`TYPING_CHUNK_SIZE` raised 80 → 120**, making a 2,400-character native reply
+  about 13% faster (39.0 s → ~33.9 s) with no change in behavior. 120 is the
+  largest value backed by uniquely-attributed live runs (4 of 4).
+  *Superseded within this same release:* the 2026-08-25 live work above raised
+  it again to 300 and established that this constant trades speed, not safety.
+  The reasoning recorded here — that a larger chunk is more dangerous — does not
+  hold once the compose editor's drain is actually waited for.
+- **A larger raise, to 160, was tried and reverted — the measurement was
+  invalid.** All four of 160's apparent passes verified against a draft the
+  *preceding* run had created; every result row carried `exact_id_verified:
+  false`. The tell was that all four clocked 31.5 s to the tenth of a second
+  across twelve minutes, where 80 and 120 spread ~0.9 s. On its first honest
+  test — once the stale matching drafts had aged out of the lookup window — 160
+  failed. **The previously published claim of "a cliff between 160 and 200" is
+  withdrawn**; the real boundary is above 120 and has not been located.
+- **Why the verifier could be fooled**, which is a live defect and not only a
+  testing story: when a Drafts mailbox holds more messages than
+  `DRAFT_LIST_CAP`, the identity resolver bails and verification falls back to
+  matching on subject plus body-contains over the newest drafts. It does not
+  require the matched draft to be the one the call just created. Any repeated
+  test that types an identical body into a reply to the same message will
+  therefore verify against its own predecessors. Sweeps must now carry a unique
+  nonce per run and must treat `exact_id_verified: false` as indeterminate
+  rather than as a pass.
+- **What still stands from the sweep.** At 2,400 characters, sizes 200 and 250
+  failed `REPLY_BODY_MISMATCH` on 4 of 4 runs; those failures are trustworthy
+  because the contamination channel can only manufacture passes, never
+  failures. They were also *slower* (69-71 s against 33-39 s), because a
+  mismatch burns the retype path, so the larger sizes are worse on both speed
+  and safety. Larger chunks type more text between panel dismissals, so a
+  substitution lands before the rejection does. At 1,200 characters every size
+  passed, including 250: a short body does not discriminate, and re-testing
+  this needs at least 2,400 characters. Full audit, the defect list it
+  uncovered, and the design that would settle the boundary:
+  `tasks/active/native-reply/session-degradation-test-plan-2026-08-25.md`.
 
 - **The native reply identity capsule parser rejected every valid capsule.**
   The capsule is four pipe-separated fields whose fourth names the evidence

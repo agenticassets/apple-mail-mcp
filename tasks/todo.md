@@ -2,11 +2,11 @@
 
 **Tasks layout:** Agents MUST follow [`tasks/CLAUDE.md`](CLAUDE.md) § Agent requirements (`active/` · `reference/` · `archive/` only; local gates enforce).
 
-**Current branch:** `chore/public-directory-listings` (base: `origin/main` @ `9ba502e`). It carries **v3.12.0**: everything a vendor plugin-directory reviewer checks before admitting the plugin, plus the copy-ready submission packet. Lane folder: [`active/public-directory-listings/`](active/public-directory-listings/). Not yet merged, not yet tagged.
+**Current branch:** none — `chore/public-directory-listings` merged and was deleted locally. Start the next lane from a fresh branch off `origin/main`.
 
-**Main state:** **v3.11.9 is tagged and pushed** on `9ba502e`, the merge of PR #96 (cross-process Mail lock). v3.11.8 (PR #94, `f1264c6`) closed the post-3.11.7 defect audit. GitHub Release `v3.11.9` carries the `.mcpb`, `.zip`, and `.plugin` artifacts; twelve repo topics and private vulnerability reporting are live.
+**Main state:** `main` is at `4a143fc`, the merge of PR #99 (native-reply editor drain + the typing-budget split). **v3.12.0 is merged but NOT yet tagged** — PR #97 landed the directory-listing work as `1050e8e`, then PR #99 landed two more commits on top, so a `v3.12.0` tag must point at `4a143fc`, not at the #97 merge. Vendor directory forms are still unfiled and are Cayman's to sign in for ([`active/public-directory-listings/submission-packet-2026-08-24.md`](active/public-directory-listings/submission-packet-2026-08-24.md), `AGENTIC-2492`). Prior: v3.11.9 tagged on `9ba502e`, the merge of PR #96 (cross-process Mail lock). v3.11.8 (PR #94, `f1264c6`) closed the post-3.11.7 defect audit. GitHub Release `v3.11.9` carries the `.mcpb`, `.zip`, and `.plugin` artifacts; twelve repo topics and private vulnerability reporting are live.
 
-## What this branch does
+## What the merged v3.12.0 lane did
 
 Goal: `apple-mail` visible inside each client's own plugin browser (Claude Desktop and Cowork "Browse plugins", Claude Code `/plugin` Discover, Cursor Customize), not only through the GitHub marketplace URL.
 

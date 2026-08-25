@@ -8,11 +8,11 @@ This file holds the durable engineering rules extracted from the repo root `CLAU
 
 ## Tool-implementation conventions (locked in 3.1.5)
 
-The anti-patterns below caused real production timeouts on a 24K-message Exchange inbox. Every new tool that touches Mail.app must follow these rules. Templates: `search.py`, `inbox.py`, `smart_inbox.py`, `manage.py`, `analytics.py`, `compose.py`.
+The anti-patterns below caused real production timeouts on a 24K-message Exchange inbox. Every new tool that touches Mail.app must follow these rules. Templates: the tool packages under [`plugin/apple_mail_mcp/tools/`](../plugin/apple_mail_mcp/tools/) — `search/`, `inbox/`, `smart_inbox/`, `manage/`, `analytics/`, `compose/`, `calendar/`. Each is a package of leaf modules re-exported through its `__init__.py`, not a single flat module; see [`plugin/apple_mail_mcp/tools/CLAUDE.md`](../plugin/apple_mail_mcp/tools/CLAUDE.md) for the module map.
 
 ### ScanWindow capability token (v3.2.0)
 
-[`bounded_inbox_scan()`](../plugin/apple_mail_mcp/bounded_scan.py) is the **sole legitimate issuer** of `ScanWindow` capability tokens. Tools must never construct `ScanWindow` directly: call `bounded_inbox_scan()` or one of the safe builders (`build_bounded_message_scan`, `build_whose_id_list`). `AppleScriptBackend._check_window` rejects forged or out-of-policy windows with structured error `code: INVALID_SCAN_WINDOW`. This is what enforces the unbounded-scan refusal (`code: UNBOUNDED_SCAN_REQUIRED`) at the backend layer, not just inside tool wrappers. `full_inbox_export` itself is disabled (`code: UNBOUNDED_EXPORT_DISABLED`, no AppleScript runs); it is no longer a working escape hatch for unbounded scans. Contract suite: `test_bounded_scan_contract`, `test_no_unbounded_whose`, `test_full_inbox_export`.
+[`bounded_inbox_scan()`](../plugin/apple_mail_mcp/bounded_scan.py) is the **sole legitimate issuer** of `ScanWindow` capability tokens. Tools must never construct `ScanWindow` directly: call `bounded_inbox_scan()` or one of the safe builders (`build_bounded_message_scan`, `build_bounded_filtered_scan`, `build_whose_id_list`). Enforcement is at issue time, inside `bounded_scan.py`: the issuer and the builders raise `ToolError(code="INVALID_SCAN_WINDOW")` on an unbounded or out-of-policy request and `code: UNBOUNDED_SCAN_REQUIRED` when no window is bounded, so a tool cannot smuggle in an unbounded scan by hand-rolling a token. `ScanWindow` in [`backend/base.py`](../plugin/apple_mail_mcp/backend/base.py) carries the `_issued_by` provenance field, and the backend `Protocol` requires any future concrete backend to refuse a token that does not carry the issuer stamp; there is no concrete backend class in the tree today, so do not rely on a second check downstream of `bounded_scan.py`. `full_inbox_export` itself is disabled (`code: UNBOUNDED_EXPORT_DISABLED`, no AppleScript runs); it is no longer a working escape hatch for unbounded scans. Contract suite: `test_bounded_scan_contract`, `test_no_unbounded_whose`, `test_full_inbox_export`.
 
 ### ID-first mutations and scan opt-in gates (v3.7.0)
 
@@ -24,7 +24,7 @@ Destructive and bulk mutation tools default to **exact `message_ids`** from a pr
 | Body scan | `search_emails` | `body_text` ignored unless opted in | `allow_body_scan=True` | `code: BODY_SCAN_DISABLED` |
 | Deprecated target selector | `reply_to_email`, `forward_email`, `move_email`, `update_email_status`, `manage_trash`, `list_email_attachments`, `save_email_attachment`, `export_emails(scope="single_email")`, `manage_drafts(send/open/delete)` | Exact ids required | None | `code: TARGET_SELECTOR_DEPRECATED` |
 
-**`FILTER_SCAN_DISABLED` contract** (`manage.py` → `_filter_scan_disabled_error`):
+**`FILTER_SCAN_DISABLED` contract** (`manage/helpers.py` → `_filter_scan_disabled_error`, called from `manage/move.py` and `manage/status.py`):
 
 - Raised when a mutation tool is called with date-only or explicit bulk filter kwargs but **without** `message_ids` and **without** `allow_filter_scan=True`.
 - `remediation.preferred`: collect ids via `search_emails` / `list_inbox_emails`, then call the mutation with `message_ids=[...]`.
@@ -38,7 +38,7 @@ Destructive and bulk mutation tools default to **exact `message_ids`** from a pr
 - `remediation.exact_selector`: the id parameter required by the action tool.
 - Keep these legacy kwargs in v3.x schemas for compatibility, but do not route them into target lookup.
 
-**`BODY_SCAN_DISABLED` contract** (`search.py` → `_body_scan_disabled_error`):
+**`BODY_SCAN_DISABLED` contract** (`search/records.py` → `_body_scan_disabled_error`, called from `search/emails.py`):
 
 - Raised when `search_emails` is called with `body_text` set but `allow_body_scan=False` (the default).
 - Body scans are O(N × message-size) on large mailboxes; pair `allow_body_scan=True` with a tight `date_from` / `recent_days` window.
@@ -106,10 +106,10 @@ The lint test `tests/core/test_no_unbounded_whose.py` enforces the first four ru
 
 ### Async + per-account isolation
 
-- Tools that fan out across accounts should be `async def` and dispatch each account via `asyncio.to_thread(run_applescript, …)`, one account at a time, in a plain loop (not `asyncio.gather`). All installed plugin hosts for this macOS user queue each `osascript` invocation through one shared cross-process lock (`core/applescript.py`, `_MAIL_LOCK`), so concurrent dispatch only adds thread churn and does not run accounts in parallel. Wall time is the sum across accounts, not the slowest single account.
+- Tools that fan out across accounts should be `async def` and dispatch each account via `asyncio.to_thread(run_applescript, …)`, one account at a time, in a plain loop (not `asyncio.gather`). `run_applescript` (`core/applescript.py`) serializes every `osascript` invocation behind two layers — the in-process `_MAIL_LOCK` and a user-private advisory file lock that extends single-flight across all installed plugin hosts for this macOS user — so concurrent dispatch only adds thread churn and does not run accounts in parallel. Wall time is the sum across accounts, not the slowest single account.
 - Pair with per-account `AppleScriptTimeout` catch; append failing accounts to an `errors: list[str]` field and include structured error details when a tool can distinguish timeout from another Mail/App failure. Partial results > total failure.
 - Single-account tools (`compose_email`, `move_email`, `manage_drafts`, `get_top_senders`, etc.) stay sync.
-- **Never issue parallel/concurrent Mail tool calls from an agent.** Every installed plugin host for this macOS user queues each `osascript` invocation through the shared `_MAIL_LOCK` (up to 300s before raising `AppleScriptTimeout`); calling multiple Apple Mail tools at once does not speed anything up and can time out. Call one Mail tool at a time and wait for its result.
+- **Never issue parallel/concurrent Mail tool calls from an agent.** Every installed plugin host for this macOS user queues behind the same single-flight pair; a caller that spends more than `_LOCK_WAIT_TIMEOUT` (300 s) waiting for its turn raises `AppleScriptTimeout` rather than queuing indefinitely. Calling multiple Apple Mail tools at once does not speed anything up and can time out. Call one Mail tool at a time and wait for its result.
 
 ### Timeout exposure
 
@@ -155,7 +155,7 @@ The lint test `tests/core/test_no_unbounded_whose.py` enforces the first four ru
 
 | Mode | Behavior | When agents should use it |
 |------|----------|---------------------------|
-| `draft` (default) | Save to Drafts quietly; do not leave fresh compose windows open. By default `reply_to_email` runs the native path (`native_format=True`): Mail's `reply ... with opening window` renders its own colored quote bar and default logo signature, and `reply_body` is typed in above the quote via System Events keystrokes in small focus-guarded chunks (never one keystroke of the whole body, and never the clipboard); a single keystroke of the whole body was the AGENTIC-1214 truncation/ALL-CAPS bug. `native_format=True` is the only supported path for normal agent use. `native_format=False` is gated: it returns `WINDOWLESS_FALLBACK_DISABLED` unless the caller explicitly passes `allow_windowless_fallback=True`, and that windowless object-model path (plain-text quote, no Accessibility) is reserved for deliberate headless/CI runs only, never set by agents. An RFC-backed reply identity, with `Message-ID` and source-linked `In-Reply-To`, can authorize later guarded cleanup after revalidation. If iCloud has no outgoing RFC ID, exactly one newly persisted numeric Drafts row is transaction-scoped proof for this verification only, never cleanup. Cap limits, indexing delay, ambiguity, or identity drift fail closed; newest-Drafts fallback is diagnostic only. Reply JSON exposes both `exact_id_verified` and `draft_id_source`. | Native drafting and background agent work under `--draft-safe` |
+| `draft` (default) | Save to Drafts quietly; do not leave fresh compose windows open. By default `reply_to_email` runs the native path (`native_format=True`): Mail's `reply ... with opening window` renders its own colored quote bar and default logo signature, and `reply_body` is typed in above the quote via System Events keystrokes in small focus-guarded chunks (never one keystroke of the whole body, and never the clipboard); a single keystroke of the whole body was the AGENTIC-1214 truncation/ALL-CAPS bug. Chunking alone does not prevent truncation: `keystroke` returns when events are posted, not when WebKit has processed them, so after the last chunk the script polls the compose editor's own text until the body has landed before it saves. That drain budget scales with body length (`TYPING_SETTLE_*` in `compose/constants.py`), and the caller-facing AppleScript timeout is projected from the same constants in `compose/reply_typing_budget.py` so it cannot fire mid-drain. Chunk size is a proxy for backlog depth, not a safety knob — do not "fix" a truncated tail by shrinking `TYPING_CHUNK_SIZE`. `native_format=True` is the only supported path for normal agent use. `native_format=False` is gated: it returns `WINDOWLESS_FALLBACK_DISABLED` unless the caller explicitly passes `allow_windowless_fallback=True`, and that windowless object-model path (plain-text quote, no Accessibility) is reserved for deliberate headless/CI runs only, never set by agents. An RFC-backed reply identity, with `Message-ID` and source-linked `In-Reply-To`, can authorize later guarded cleanup after revalidation. If iCloud has no outgoing RFC ID, exactly one newly persisted numeric Drafts row is transaction-scoped proof for this verification only, never cleanup. Cap limits, indexing delay, ambiguity, or identity drift fail closed; newest-Drafts fallback is diagnostic only. Reply JSON exposes both `exact_id_verified` and `draft_id_source`. | Native drafting and background agent work under `--draft-safe` |
 | `open` | Save first, then leave the compose window open for human review | User wants each draft to pop up in Mail (e.g. review 10 replies in sequence) |
 | `send` | Send immediately. `reply_to_email(output_format="json", mode="send")` is rejected before mutation. Any attachment-bearing `compose_email`, `reply_to_email`, or `forward_email` call rejects direct send before mutation: draft/open, verification, and human review come first. Standalone HTML/attachment compose restores the real subject before save, then proves the saved row by snapshot identity or exact real subject with no reusable locator. Forward attachment drafts restore `fwdSubject` on the live outgoing message before the first save, then prove the saved row by snapshot identity or unique exact real subject; re-resolve a fresh exact id only when a later lifecycle action is authorized. | Explicit user authorization only; blocked when `DRAFT_SAFE` or `READ_ONLY` |
 
@@ -177,13 +177,14 @@ The lint test `tests/core/test_no_unbounded_whose.py` enforces the first four ru
 
 ## Versioning
 
-Version is duplicated across **six** files — bump all together when releasing. Top-level Claude marketplace `metadata.version` (1.0.0) describes the marketplace manifest itself; don't touch it. The Codex marketplace at `.agents/plugins/marketplace.json` does not carry a release version; it points at `./plugin`. See [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md).
+Version is duplicated across **seven** files — bump all together when releasing. `pyproject.toml` is the source of truth; the other six are published install or discovery surfaces, and [`_public_version_checks()`](../tools/validators/validate_manifests.py) in `validate_manifests.py` fails the gate on any drift from it. Top-level Claude marketplace `metadata.version` (1.0.0) describes the marketplace manifest itself; don't touch it. The Codex marketplace at `.agents/plugins/marketplace.json` does not carry a release version; it points at `./plugin`. See [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md).
 
 | File | Field |
 |------|-------|
-| `pyproject.toml` | `[project].version` |
+| `pyproject.toml` | `[project].version` (source of truth) |
 | `plugin/.claude-plugin/plugin.json` | `version` |
 | `plugin/.codex-plugin/plugin.json` | `version` |
+| `plugin/.cursor-plugin/plugin.json` | `version` |
 | `.claude-plugin/marketplace.json` | `plugins[0].version` |
 | `server.json` | `version` and `packages[0].version` |
 | `apple-mail-mcpb/manifest.json` | `version` |

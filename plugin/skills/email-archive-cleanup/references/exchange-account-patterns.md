@@ -31,7 +31,7 @@ Treat `get_needs_response` as a **hint**, not a work queue. On noisy inboxes it 
 Thread tools can return **incomplete** results on Exchange:
 
 - Replies missing from the thread view while present in Sent.
-- `0` hits for known subjects (`T240029`, `Research Assistantship`, etc.).
+- `0` hits for a subject you know exists (a course code, a grant name, etc.).
 - Subject-keyword threading diverges from header-based threading.
 
 **Mitigation:**
@@ -84,7 +84,7 @@ If `verify_draft` / `verify_drafts` are not registered in the client:
 
 On Exchange and other server accounts, numeric Drafts `draft_id`s are reassigned when the mailbox re-syncs, including between two `manage_drafts(action="list")` calls with **zero writes in between** (observed live: `103` -> `91058` -> `91061`). Do not cache a `draft_id` from an earlier turn and act on it later.
 
-- **Before `verify_draft`, `manage_drafts(action="open"|"send"|"delete")`, or `manage_drafts(action="cleanup_empty")`:** re-resolve the id immediately beforehand with a fresh `manage_drafts(action="list")` or `action="find")` call in the same turn, not a cached id from a prior call.
+- **Before `verify_draft`, `manage_drafts(action="open"|"send"|"delete")`, or `manage_drafts(action="cleanup_empty")`:** re-resolve the id immediately beforehand with a fresh `manage_drafts(action="list")` or `manage_drafts(action="find")` call in the same turn, not a cached id from a prior call.
 - **Durable handle for a reply draft:** `manage_drafts(action="find", in_reply_to=<source Message-ID>)` matches the source Internet Message-ID in the draft's threading headers, so it survives an id reassignment; prefer it over remembering a numeric id.
 - `reply_to_email`'s own post-save retry (on a `body_missing`/`body_after_quote` verification mismatch) deletes and re-verifies within the same call, so it is not affected by this; the caution above is for ids handed back across separate tool calls or conversation turns.
 

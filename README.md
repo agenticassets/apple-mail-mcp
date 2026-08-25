@@ -18,19 +18,19 @@
  </picture>
 </a>
 
-An MCP server that gives AI assistants full access to Apple Mail and Apple Calendar -- read, search, compose, organize, and analyze emails, plus bounded calendar reads, conflict-checked event creation, and availability search, via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **41 tools**, Python **3.10+**.
+An MCP server that gives AI assistants full access to Apple Mail and Apple Calendar -- read, search, compose, organize, and analyze emails, plus bounded calendar reads, conflict-checked event creation, and availability search, via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp==3.4.1`). **41 tools**, Python **3.10+**.
 
 ## Documentation map
 
 | Doc | Purpose |
 |-----|---------|
-| [`CLAUDE.md`](CLAUDE.md) | Root navigation hub for agents |
+| [`AGENTS.md`](AGENTS.md) | Root navigation hub for agents (canonical; [`CLAUDE.md`](CLAUDE.md) is a byte-for-byte mirror apart from its title) |
 | [`PRIVACY.md`](PRIVACY.md) | Privacy policy: what the server accesses, what leaves the Mac, files it writes |
 | [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and the safety model |
 | [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) | Tool performance rules, read-only, skills, plugin-dev |
 | [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md) | Live Mail verification via `apple-mail` CLI |
 | [`plugin/docs/CLAUDE.md`](plugin/docs/CLAUDE.md) | Plugin wrapper & `start_mcp.sh` |
-| [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) | Package entry, `core.py`, CLI |
+| [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) | Package entry, `core/`, CLI |
 | [`plugin/apple_mail_mcp/tools/CLAUDE.md`](plugin/apple_mail_mcp/tools/CLAUDE.md) | MCP tool modules |
 | [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) | Skill authoring |
 | [`tests/CLAUDE.md`](tests/CLAUDE.md) | Test layout & AppleScript mocks |
@@ -227,7 +227,7 @@ replace `VERSION` or the path below if the details output shows a different
 install path:
 
 ```bash
-VERSION=3.11.8
+VERSION=3.12.0
 .venv/bin/python tools/probes/mcp_tool_smoke.py \
   --command /bin/bash \
   --arg "$HOME/.claude/plugins/cache/apple-mail-mcp/apple-mail/$VERSION/start_mcp.sh" \
@@ -572,7 +572,7 @@ To stay fast on large mailboxes (24K+ messages), the server applies conservative
 | 50 emails max | `list_email_attachments` | Pass `max_results` |
 | **50-message hard scan ceiling** | `search_emails`, `list_inbox_emails` | None: every call scans at most 50 messages regardless of `limit` / `max_emails` / `recent_days` / window. Page across multiple calls or narrow the window (`recent_days`, `date_from`) to see more |
 | Single account | All scoped tools when `DEFAULT_MAIL_ACCOUNT` is set | Pass `account=<name>` or `all_accounts=True` |
-| Per-call timeout | All long-running tools | Pass `timeout=<seconds>` |
+| Per-call timeout | All long-running tools | Pass `timeout=<seconds>`. Exception: on `reply_to_email(native_format=True)` an explicit `timeout` is floored at the budget the typing script projects from `reply_body` length — it can raise the budget, never lower it, because a value below the projection fires `AppleScriptTimeout` mid-drain and strands a typed, unsaved compose window. Over-long bodies are refused with `REPLY_BODY_TYPING_BUDGET_EXCEEDED` rather than handed a bigger timeout |
 | **Mail calls serialized** | Every Apple Mail tool | None: all installed plugin hosts for this macOS user queue every `osascript` invocation through one shared cross-process lock. Call one Apple Mail tool at a time and wait for its result; parallel or concurrent Mail tool calls queue behind each other and can time out. |
 | Unbounded scans refused | All routine scan/search tools (`recent_days=0` / `max_emails=0`) | Returns structured error `code: UNBOUNDED_SCAN_REQUIRED`; narrow the window (`recent_days` / `date_from`) or page through bounded calls (`export_emails`, `list_inbox_emails`, `search_emails`). `full_inbox_export` is disabled and is not a working fallback |
 | **ID-first mutations** | `move_email`, `update_email_status`, `manage_trash` | Pass `message_ids=[...]` from `search_emails`, `list_inbox_emails`, or `get_needs_response(output_format="json")` (fast, preferred). Date/bulk filter paths require `allow_filter_scan=True` or return `code: FILTER_SCAN_DISABLED`. `subject_keyword` and `sender` on action tools always return `TARGET_SELECTOR_DEPRECATED`, even with `allow_filter_scan=True`. |
@@ -691,7 +691,7 @@ The plugin MCP server starts with **`--draft-safe`** by default for both Claude 
 - macOS with Apple Mail configured
 - Python 3.10+ for the MCP server package installed from a source checkout
 - Apple Silicon (macOS arm64) and Python 3.13 for the self-contained Claude, Codex, Cursor, and MCPB plugin payload
-- `fastmcp>=3.1.0,<4` and `mcp-ui-server==1.0.0` for the MCP Apps dashboard
+- `fastmcp==3.4.1` and `mcp-ui-server==1.0.0` for the MCP Apps dashboard
 - Claude Desktop, Codex Desktop/CLI, or any MCP-compatible client
 - Mail.app permissions: Automation + Mail Data Access (grant in **System Settings > Privacy & Security > Automation**)
 

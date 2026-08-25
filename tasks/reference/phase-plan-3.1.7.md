@@ -2,7 +2,7 @@
 
 **Branch:** `improve-speed-and-tools` · **Tests:** 249 *(baseline doc: 206)* · **Version:** 3.1.7
 **Baseline:** [`live-test-baseline-2026-05-21.md`](live-test-baseline-2026-05-21.md) · [`LIVE_MCP_CLI_TESTING_REPORT_2026-05-21.md`](../../docs/live-testing-reports/LIVE_MCP_CLI_TESTING_REPORT_2026-05-21.md)  
-**Backlog:** [`todo.md`](todo.md) · **Archive:** [`archive/2026-05-21/`](archive/2026-05-21/)
+**Backlog:** [`todo.md`](../todo.md) · **Archive:** [`archive/2026-05-21/`](../archive/2026-05-21/)
 
 ## Situation
 
@@ -14,7 +14,7 @@
 2. **Production-scale accounts** (`cayman@agenticassets.ai`, 194 mailboxes) — metadata and overview breach thresholds; functional behavior is correct.
 3. **Analysis / triage tools** — `needs-response`, `awaiting-reply`, `top-senders`, `get_statistics account_overview` are 6–24s and **not covered by `perf-test`**, so regressions slip through.
 
-Do **not** start hybrid SQLite or id-first destructive refactors until analysis perf is benchmarked and gated. **Plugin workflow skills** (nine under `plugin/skills/` at the time; eleven as of v3.10.0) shipped; see [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md).
+Do **not** start hybrid SQLite or id-first destructive refactors until analysis perf is benchmarked and gated. **Plugin workflow skills** (nine under `plugin/skills/` at the time; eleven as of v3.10.0) shipped; see [`plugin/skills/CLAUDE.md`](../../plugin/skills/CLAUDE.md).
 
 ## Sequence
 

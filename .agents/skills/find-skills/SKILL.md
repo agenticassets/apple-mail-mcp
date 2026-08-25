@@ -103,6 +103,17 @@ npx skills add <owner/repo@skill> -g -y
 
 The `-g` flag installs globally (user-level) and `-y` skips confirmation prompts.
 
+**In this repo, do not use `-g`.** A repo-local skill must end up in all three places or it will not
+resolve for every host and will not be reproducible:
+
+1. the canonical copy at `.agents/skills/<name>/`,
+2. a relative symlink `.claude/skills/<name>` → `../../.agents/skills/<name>`,
+3. an entry in the repo-root `skills-lock.json` pinning its source and `computedHash`.
+
+`npx skills add -g` writes outside the repo and does none of the three. Vendor into
+`.agents/skills/<name>/`, create the symlink, add the lockfile entry, then commit. Never keep a
+duplicate copy for a different tool — `.agents/skills/` is the single canonical home.
+
 ## Common Skill Categories
 
 When searching, consider these common categories:

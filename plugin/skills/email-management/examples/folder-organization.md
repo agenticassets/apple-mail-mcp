@@ -2,6 +2,8 @@
 
 Organizing emails into folders (mailboxes) is a balance between structure and simplicity. Too many folders becomes unmanageable; too few makes finding emails difficult. This guide helps you find the right balance.
 
+**`move_email` executes on the spot.** Its `dry_run` defaults to **`False`**, so any snippet below that omits `dry_run` moves mail the moment it runs. Before every bulk move, run the same call with `dry_run=True`, show the user the count and sample subjects, and move only after they confirm. Archive moves must also pass the Human-Sender Screen in `email-archive-cleanup`'s `SKILL.md` first. Snippets that index `preview["items"]` / `preview["emails"]` require the discovery call to pass `output_format="json"`; the default is text, which has no such keys.
+
 ## Core Philosophy
 
 ### The Search vs. Sort Debate
@@ -523,7 +525,11 @@ search_emails(subject_keyword="urgent", read_status="unread")
 search_emails(sender_exact="boss@company.com", read_status="unread")
 
 # Flagged (action items)
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # View flags in results
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 
 # Old (low priority) — always pair date_to with date_from; a bare date_to
 # keeps the default 48h recent_days window and returns an empty result

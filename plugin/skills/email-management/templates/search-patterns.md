@@ -8,7 +8,7 @@ Use search as discovery, not action authorization. Search tools return candidate
 2. Review the returned subjects, senders, accounts, mailboxes, dates, and ids.
 3. Collect exact `message_id` values from the reviewed candidate set.
 4. Call action tools with `message_ids=[...]` and a clear cap.
-5. Use `dry_run=True` before moves, status updates, trash operations, or large attachment saves.
+5. Use `dry_run=True` before moves, trash operations, and draft deletes — the only three that have it (`move_email` defaults to `dry_run=False`; `manage_trash` and `manage_drafts` default to `True`). `update_email_status` and `save_email_attachment` have no `dry_run` at all, so show the collected ids and get user confirmation before those calls instead.
 
 ```python
 results = search_emails(

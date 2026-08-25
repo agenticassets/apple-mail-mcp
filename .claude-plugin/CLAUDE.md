@@ -22,7 +22,7 @@ Codex Desktop/CLI uses a separate marketplace file at [`../.agents/plugins/marke
 | `metadata.version` | `1.0.0` | **This marketplace JSON** — not the plugin. Don't bump on every release. |
 | `plugins[0].version` | current plugin release | **Plugin release**: sync with `pyproject.toml`, `plugin.json`, `server.json`, and the MCPB manifest. |
 
-`validate_manifests.sh` checks `plugins[0].version`, tool-count in `plugins[0].description`, `source`, listed skill paths, plugin name/version parity with `plugin/.claude-plugin/plugin.json`, **and the dual-component-conflict rule below**.
+`validate_manifests.sh` checks the marketplace `name` (`apple-mail-mcp`), `plugins[0].strict` is `true`, `plugins[0].version`, tool-count in `plugins[0].description`, `source`, any listed skill paths, plugin name/version parity with `plugin/.claude-plugin/plugin.json`, **and the dual-component-conflict rule below**.
 
 ## Components live in plugin.json — not here
 

@@ -7,6 +7,38 @@ description: Profile and optimize Python code using cProfile, memory profilers, 
 
 Comprehensive guide to profiling, analyzing, and optimizing Python code for better performance, including CPU profiling, memory optimization, and implementation best practices.
 
+## Read this first: what actually costs time in apple-mail-mcp
+
+This is a general-purpose guide. Two repo-specific corrections before you use it:
+
+**1. The hot path is not CPython.** This server's cost center is
+`core.run_applescript()` — stdin `osascript` round-trips into Mail.app, serialized through a
+cross-process lock shared by every plugin host on the machine. Latency is dominated by IPC and by
+Mail.app itself, not by interpreter overhead. The micro-optimization patterns below (list-comp vs
+loop, local vs global lookup, function-call overhead) target the wrong layer: measure and reduce
+**AppleScript round-trips** first — batch, bound the scan, cache — before optimizing Python.
+`lru_cache` is the one lever below that regularly pays off here.
+
+Timing notes that have already cost real debugging time:
+
+- **Time only successful runs.** A failed run burns a fallback poll the success path never
+  executes; fitting through failures inflated measured per-chunk cost ~3x and invented a
+  nonexistent timeout cliff.
+- **Record `loadavg` alongside your numbers**, or you will misread machine load as Mail.app
+  degradation.
+- Property reads dominate some paths (tens of ms *each*, rising with depth) while binding a
+  message slice is nearly free — profile the reads, not the slicing.
+
+**2. Only the stdlib profilers are available.** `cProfile`/`pstats`, `timeit`, and
+`sys.getsizeof` work as written. `line_profiler`, `memory_profiler`, and `py-spy` are **not
+installed** in `.venv/` or on PATH, so Patterns 2–4 below fail as written. Adding them is gated:
+the repo rule is *do not add new lint/type tools without asking*. If you do install one after
+asking, use the repo venv — `.venv/bin/pip install …`, never a bare `pip`, which resolves to the
+global interpreter.
+
+Repo perf gates that already exist: `tests/infra/test_perf_budget.py`,
+`tests/cli/test_cli_perf.py`, and `tools/probes/`.
+
 ## When to Use This Skill
 
 - Identifying performance bottlenecks in Python applications
@@ -131,7 +163,7 @@ python -m pstats output.prof
 ### Pattern 2: line_profiler - Line-by-Line Profiling
 
 ```python
-# Install: pip install line-profiler
+# Install (not present by default; ask first): .venv/bin/pip install line-profiler
 
 # Add @profile decorator (line_profiler provides this)
 @profile
@@ -175,7 +207,7 @@ if __name__ == "__main__":
 ### Pattern 3: memory_profiler - Memory Usage
 
 ```python
-# Install: pip install memory-profiler
+# Install (not present by default; ask first): .venv/bin/pip install memory-profiler
 
 from memory_profiler import profile
 
@@ -203,7 +235,7 @@ if __name__ == "__main__":
 ### Pattern 4: py-spy - Production Profiling
 
 ```bash
-# Install: pip install py-spy
+# Install (not present by default; ask first): .venv/bin/pip install py-spy
 
 # Profile a running Python process
 py-spy top --pid 12345

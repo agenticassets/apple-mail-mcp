@@ -73,6 +73,7 @@ The canonical list lives in [`INDEX.md`](INDEX.md) § Active workstreams (single
 |------|------|
 | [`reference/roadmap-2026-07-10.md`](reference/roadmap-2026-07-10.md) | Forward roadmap (new tools/skills, enhancements, hardening, refusals) |
 | [`reference/id-first-refactor-spec.md`](reference/id-first-refactor-spec.md) | Shipped ID-first design (v3.7.0) |
+| [`reference/phase-3-annotation-matrix.md`](reference/phase-3-annotation-matrix.md) | Canonical tool-annotation matrix (`server.py` `ToolAnnotations` presets); cited from `plugin/apple_mail_mcp/tools/CLAUDE.md` § Add a tool |
 | [`reference/apple-mail-plugin-robustness-goal-2026-05-22.md`](reference/apple-mail-plugin-robustness-goal-2026-05-22.md) | Active robustness goal |
 | [`reference/robustness-backlog-2026-05-22.md`](reference/robustness-backlog-2026-05-22.md) | Backlog sidecar |
 | [`reference/phase-plan-3.1.7.md`](reference/phase-plan-3.1.7.md) | Historical release sequencing |

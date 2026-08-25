@@ -8,10 +8,13 @@ Dev-infra guardrails — not MCP tools (`plugin/apple_mail_mcp/tools/` is the se
 | [`validators/`](validators/) | Python validators invoked by the local gates and tests |
 | [`manifest_checks/`](manifest_checks/) | Manifest check implementations (imported by `validators/validate_manifests.py`) |
 | [`probes/`](probes/) | Research / smoke / patch helpers (not gates, not validators) |
+| [`release/`](release/) | Local source-release trust helpers backing the release gates: `source_release.py` (create/verify immutable signed source-release tags), `pre_push.py` (require a current release-gate stamp for sensitive pushes), `marketplace_handoff.py` (print the verified Marketplace handoff) |
 
 Root keeps `expected_test_count.txt` (single source of truth for the collected-test
 count), [`marketplace_identity.json`](marketplace_identity.json) (marketplace
-identity and promotion boundary), and this index.
+identity and promotion boundary), [`marketplace_payload.py`](marketplace_payload.py)
+(deterministic payload evidence for a source-owned marketplace promotion; covered by
+`tests/infra/test_marketplace_payload.py`), and this index.
 
 ## Marketplace identity
 
@@ -125,7 +128,7 @@ Runs in `bash tools/gates/dev-check.sh` (default and release tiers).
 | `validators/validate_manifests.py` | Python orchestrator (`main`); covered by `tests/infra/test_validate_manifests.py` |
 | `manifest_checks/` | Check implementations grouped by concern (see below) |
 
-The individual checks live in the sibling `manifest_checks/` package (`common.py` for the shared `ROOT`/constants/helpers, then `version.py`, `tool_count.py`, `install_contracts.py`, `codex.py`, `artifacts.py`, `module_budget.py`); `validators/validate_manifests.py` imports and orchestrates them in `main` and re-exports them so the test suite keeps calling `validate_manifests.<check>`. `validate_manifests.ROOT` forwards to `manifest_checks.common.ROOT`, so monkeypatching it still redirects every check.
+The individual checks live in the sibling `manifest_checks/` package (`common.py` for the shared `ROOT`/constants/helpers, then `version.py`, `tool_count.py`, `install_contracts.py`, `codex.py`, `cursor.py`, `artifacts.py`, `module_budget.py`); `validators/validate_manifests.py` imports and orchestrates them in `main` and re-exports them so the test suite keeps calling `validate_manifests.<check>`. `validate_manifests.ROOT` forwards to `manifest_checks.common.ROOT`, so monkeypatching it still redirects every check.
 
 Enforces (source of truth: `pyproject.toml` `[project].version` and `[project].name`):
 
@@ -138,7 +141,7 @@ Enforces (source of truth: `pyproject.toml` `[project].version` and `[project].n
 7. **Archive structural integrity** — plugin zip and `.mcpb` must contain no duplicate members and no zero-byte directory entries (names ending in `/`); raw `zip -r .` produces entries that installers can reject. Build with `tools/gates/build-artifacts.sh` / `mcpb pack` or `zip -D`.
 8. **Release artifact presence** — opt in with `APPLE_MAIL_REQUIRE_DIST_ARTIFACTS=1` to require **all three** local distributables before shipping: `apple-mail-plugin.zip`, `apple-mail.plugin`, and `apple-mail-mcp-v{version}.mcpb`
 9. **Plugin/.plugin byte parity** — `apple-mail.plugin` must exist alongside `apple-mail-plugin.zip` and be byte-identical. The `.plugin` extension is the canonical Cowork "Add plugin → Upload plugin" artifact; drifting bytes break the Cowork upload silently. Always rebuild via `tools/gates/build-artifacts.sh`, which copies the canonical zip to the `.plugin` name.
-10. **Marketplace ↔ plugin.json component conflict** — fails if both `.claude-plugin/marketplace.json plugins[0]` and `plugin/.claude-plugin/plugin.json` declare any of `commands`, `agents`, `skills`, `hooks`, `mcpServers` while marketplace `strict` is not `true`. Mirrors the Claude Code "conflicting manifests" install error. See [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md) § "Components live in plugin.json" for the rule and escape hatch.
+10. **Marketplace ↔ plugin.json component conflict** — requires `.claude-plugin/marketplace.json plugins[0].strict` to be `true`, and fails if both that entry and `plugin/.claude-plugin/plugin.json` declare any of `commands`, `agents`, `skills`, `hooks`, `mcpServers` while marketplace `strict` is not `true`. Mirrors the Claude Code "conflicting manifests" install error. See [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md) § "Components live in plugin.json" for the rule and escape hatch.
 11. **Codex plugin surface** — `.agents/plugins/marketplace.json` must point at `./plugin`; `plugin/.codex-plugin/plugin.json` must expose `skills: "./skills"` and `mcpServers: "./.mcp.json"`; `plugin/.mcp.json` must launch `/bin/bash ./start_mcp.sh --draft-safe` with `cwd: "."`.
 12. **Cursor plugin surface** — `plugin/.cursor-plugin/plugin.json` must point at `./mcp.json`; `plugin/mcp.json` must launch `/bin/bash ${CURSOR_PLUGIN_ROOT}/start_mcp.sh --draft-safe`. Cursor has its own validator and must not inherit Codex's relative-path contract. This is a static adapter check, not live Cursor acceptance proof.
 13. **Stale distribution artifacts** — fails if repo root contains `apple-mail-mcp-v*.mcpb` files other than the current `pyproject.toml` version; run `tools/gates/build-artifacts.sh` to prune and rebuild.
@@ -250,7 +253,7 @@ Tiered local gate (no live Mail except `live` tier). Requires root `.venv/`.
 | `surface` | default + wrapper check always |
 | `manifest` | manifests only |
 | `live` | default + `.venv/bin/apple-mail quick-check --json` |
-| `release` | `validate_no_committed_identity.py` first (fail before spending a build on a tree that cannot ship), then `lint`, then `tools/gates/build-artifacts.sh` (rebuilds `apple-mail-plugin.zip` + `apple-mail.plugin` + `.mcpb`, then runs `APPLE_MAIL_REQUIRE_DIST_ARTIFACTS` validate and `mcpb unpack`/`validate` smoke), `validate_tasks_layout.py` + `validate_repo_root.py`, pytest, and wrapper. The tiers are not supersets of each other, so a new validator must be added to both `run_default()` and the `release)` arm. **Run before every commit that touches `plugin/`, manifests, `pyproject.toml`, `requirements.txt`, or release artifacts** — finalize-apple-mail-mcp skill enforces this. |
+| `release` | `validate_no_committed_identity.py` first (fail before spending a build on a tree that cannot ship), then `lint`, the module-line-budget warn report, then `tools/gates/build-artifacts.sh` (rebuilds `apple-mail-plugin.zip` + `apple-mail.plugin` + `.mcpb`, then runs `APPLE_MAIL_REQUIRE_DIST_ARTIFACTS` validate and `mcpb unpack`/`validate` smoke), `validate_tasks_layout.py` + `validate_repo_root.py`, pytest, `run_test_count_check`, wrapper, and finally `verify-offline-runtime.sh` against **both** built artifacts (the zip and the versioned `.mcpb`). The tiers are not supersets of each other, so a new validator must be added to both `run_default()` and the `release)` arm. **Run before every commit that touches `plugin/`, manifests, `pyproject.toml`, `requirements.txt`, or release artifacts** — finalize-apple-mail-mcp skill enforces this. |
 | `all` | default + wrapper check always |
 
 ```bash

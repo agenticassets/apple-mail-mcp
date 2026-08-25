@@ -41,10 +41,10 @@ The plugin venv at `plugin/venv/` is **self-healing** — no manual rebuild when
 
 | Flag | Behavior |
 |------|----------|
-| *(default)* | `ensure_venv`: create venv on first run; rebuild if interpreter missing/broken; reinstall deps if `fastmcp` import fails; then exec server |
+| *(default)* | `ensure_venv`: create venv on first run; rebuild from scratch if the interpreter is missing/broken **or** the venv does not match `requirements.lock`; then exec server. A still-unimportable `fastmcp` after that rebuild **fails closed** (exit 1), it is not reinstalled again |
 | `--ensure-only`, `--check`, `--doctor` | Build/repair venv and verify imports, then **exit 0** without launching the server (installers / health checks) |
 
-Repair triggers: dangling `venv/bin/python3` (Python removed/upgraded), missing venv, or stale/missing dependencies after a one-pass `pip install -r requirements.txt`. Logs go to stderr (`[Apple Mail MCP] …`) for Claude Desktop / Code logs.
+Repair triggers: dangling `venv/bin/python3` (Python removed/upgraded), missing venv, or a `venv/.requirements.lock.sha256` marker that no longer matches `requirements.lock`. Reinstall is offline only — `pip install --no-index --find-links wheelhouse --require-hashes -r requirements.lock` — and a missing lock or empty wheelhouse fails closed rather than downloading. Logs go to stderr (`[Apple Mail MCP] …`) for Claude Desktop / Code logs.
 
 Fresh-install test: run `bash tools/gates/verify-offline-runtime.sh plugin` or unpack a release artifact and run the same command against it.
 

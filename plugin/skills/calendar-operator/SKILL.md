@@ -29,9 +29,10 @@ writes, ID-first mutations, and dry-run-first deletes.
 ## Bounded reads (the core doctrine)
 
 Every event read requires a window and every window is capped. This differs from the
-mail tools in one important way: with no `calendar` argument, `list_events` and
-`check_availability` fan out across every calendar (capped at 20 plus a wall-clock
-budget) instead of erroring like mail's account scoping. Prefer explicit scoping:
+mail tools in one important way: with no calendar-scoping argument (`calendar` or
+`calendars` on `list_events`, `calendars` on `check_availability`), both fan out
+across every calendar (capped at 20 plus a wall-clock budget) instead of erroring
+like mail's account scoping. Prefer explicit scoping:
 
 - `list_events(days_ahead=7)` for the upcoming week across calendars.
 - `list_events(calendar="Work", days_ahead=1, days_back=0)` for today on one calendar.

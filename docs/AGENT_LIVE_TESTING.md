@@ -4,6 +4,8 @@ Use the repo-owned CLI (`.venv/bin/apple-mail`) to verify changes against real M
 
 > **This repo is PUBLIC, and everything below reads a real mailbox.** Output from these commands contains real addresses, subjects, account UUIDs, and absolute paths. Never paste it verbatim into a commit, doc, test fixture, PR comment, or Linear issue. Report counts, timings, and redacted samples instead. Root [`AGENTS.md`](../AGENTS.md) § This repo is PUBLIC has the pre-commit diff scan.
 
+> **Verify through `.venv/bin/apple-mail`, not through MCP tools.** The repo CLI is an editable install (`pip install -e .`), so it runs the working tree. The Apple Mail **MCP tools and the generated wrapper run the installed plugin snapshot**, which is a *copy* of `plugin/` taken at install/generation time and is stale the moment you edit a source file. Verifying a working-tree fix through an MCP tool tests the old code and can return a clean, confidently wrong answer. Before trusting any wrapper or MCP result as evidence about your change, either re-sync the install (see **Regenerate wrapper** under § Generated MCP wrapper probes) or reproduce it through the repo CLI.
+
 ## Setup
 
 ```bash
@@ -38,6 +40,11 @@ If a command hangs or returns permission errors, open **System Settings → Priv
 | **light** | `ai.openclaw` (~9 mailboxes) | Fast regression after edits |
 | **production** | `Cayman - Agentic Assets` (`cayman@agenticassets.ai`) | Realistic large-mailbox perf gate before merge |
 
+`production` is the **default** threshold profile (`DEFAULT_PERF_PROFILE` in
+`cli/constants.py`); pass `--profile light` to opt down for a small account.
+The profile only selects thresholds — it does not select an account. Set the
+account separately.
+
 Set the account once:
 
 ```bash
@@ -53,8 +60,10 @@ export DEFAULT_MAIL_ACCOUNT="Cayman - Agentic Assets"   # production gate
 | `perf-test --quick` | same as `quick-check` |
 | `perf-test` | full battery: dry-run move/trash, overview, bad-account fast-fail, dashboard metadata |
 | `perf-test --include-analysis --allow-heavy-mail-scan` | heavy opt-in battery + needs-response, awaiting-reply, top-senders, statistics |
-| `perf-test --profile production` | production overview threshold (15s); metadata scales with mailbox count |
+| `perf-test --profile light` | opt out of the production thresholds for a small account (overview 10s, no-hit search 3s) |
 | `smoke-test` | accounts, inbox, no-hit search, invalid-account error, draft-safe send block |
+
+`draft-verify-smoke` is **not** in this table: it writes. See § Opt-in feature checks.
 
 Add `--verbose-sensitive` to `perf-test` / `quick-check` to include account names in perf samples (default output redacts them).
 
@@ -89,6 +98,14 @@ The generated wrapper (`apple-mail`, currently mcporter) is useful for parity
 checks, but its flags are not identical to the repo CLI. Treat the repo CLI as
 the canonical fast iteration surface, then spot-check wrapper commands agents
 will actually invoke.
+
+**The wrapper does not run your working tree.** It runs the `plugin/` copy
+under `$APPLE_MAIL_CLI_HOME` and embeds tool schemas captured when the CLI was
+generated. Until you re-run the rsync + regenerate sequence under
+**Regenerate wrapper** below, every wrapper result reflects the previously
+installed version, not your edits. The same is true of the Apple Mail MCP tools inside an agent host,
+which load the installed plugin. Use these commands to check what agents
+currently see; use the repo CLI to check what your change does.
 
 ```bash
 apple-mail --help
@@ -323,17 +340,23 @@ Output is redacted by default: counts and char lengths only; account names, subj
 
 ## Unit tests vs live Mail
 
-Local CI-equivalent gates run mocked pytest + manifest validation + **module line budget** (600 LOC warn, baseline regression fail):
+Local CI-equivalent gates run the committed-identity scan + mocked pytest + manifest validation + **module line budget** (600 LOC warn, baseline regression fail) + the collected-test-count drift gate:
 
 ```bash
+python3 tools/validators/validate_no_committed_identity.py   # run this before committing live-test output
 bash tools/gates/validate_manifests.sh
 python3 tools/validators/check_module_line_budget.py
 .venv/bin/pytest tests/ -q -rw
 ```
 
-Detail: [`CLAUDE-conventions.md`](CLAUDE-conventions.md) § Module line budget.
+Run the identity scan yourself any time you write down a live-test result. It
+is also the first step of `dev-check.sh` on the `default` and `release` tiers,
+because a leaked address or `/Users/<name>/…` path is the one failure a later
+force-push cannot undo.
 
-Required checked-in hooks (manifest drift + pytest; wrapper check when staged MCP tool files change):
+Detail: [`CLAUDE-conventions.md`](CLAUDE-conventions.md) § Module line budget · § Committed-identity gate.
+
+Required checked-in hooks (identity scan + manifest drift + `tasks/` layout + repo-root hygiene + module budget + pytest + test-count drift; wrapper check when staged MCP tool files change):
 
 ```bash
 bash tools/gates/install-git-hooks.sh   # every local or cloud checkout
@@ -358,6 +381,12 @@ mail. They may read fixture content and create drafts, but they never send.
 Use `--raw` with the generated wrapper (or the equivalent MCP call) because
 these options are not necessarily exposed as named wrapper flags.
 
+**These drills exercise the installed plugin, not the working tree.** The
+wrapper and MCP paths below prove what an installed agent host will do. If the
+point of the drill is to verify a change you just made, re-sync and regenerate
+the wrapper first (**Regenerate wrapper** under § Generated MCP wrapper probes)
+— otherwise a pass proves only that the *previous* version worked.
+
 Set values only after locating a known disposable fixture. Use a unique test
 subject and recipient address so a human can recognize the artifact. Do not use
 subject search or a broad cleanup command to remove it.
@@ -369,6 +398,23 @@ export FIXTURE_MESSAGE_ID="12345"           # exact numeric id from search
 export FIXTURE_RECIPIENT="fixture@example.test"
 export FIXTURE_EXPORT_DIR="/tmp/apple-mail-eml-fixture"
 ```
+
+### Repo-CLI draft verification (`draft-verify-smoke`)
+
+The one write-path drill that runs the working tree directly. It creates a
+single Drafts artifact in the named account, verifies it by exact persisted id,
+and then either deletes that exact id or leaves it for inspection. One of
+`--cleanup` / `--leave-draft` is required — there is no implicit default — and
+the recipient defaults to an `example.invalid` address. It never sends. Run it
+against a disposable fixture account only.
+
+```bash
+.venv/bin/apple-mail draft-verify-smoke --account "$FIXTURE_ACCOUNT" --cleanup --json
+.venv/bin/apple-mail draft-verify-smoke --account "$FIXTURE_ACCOUNT" --leave-draft --json
+```
+
+Pass `--from-address` when the fixture account has multiple aliases; the tool
+fails closed rather than guessing an identity.
 
 ### EML export and attachment limits
 
@@ -405,6 +451,16 @@ verification but is **verify-and-inspect only**: do not open, send, delete, or
 retype it automatically. A guard mismatch must leave the draft untouched; after
 a successful guarded delete, list Drafts and confirm the exact id is absent.
 Never replace this sequence with subject-based cleanup.
+
+A native reply is not fast, and slow is not the same as wedged. After the last
+typed chunk the script polls the WebKit compose editor until the body has
+landed before saving, on a budget that scales with `len(reply_body)` (see
+`compose/constants.py` `TYPING_SETTLE_*`). A multi-thousand-character body can
+legitimately spend tens of seconds in that drain. The tool's own AppleScript
+timeout is projected from the same constants
+(`compose/reply_typing_budget.py`), so let it return rather than killing the
+run: interrupting mid-drain is what strands a compose window with the body
+typed and unsaved.
 
 ```bash
 apple-mail -o json reply-to-email --raw '{
@@ -552,6 +608,19 @@ events matching both filters remain, that `engine` explains whether EventKit
 was used, and that attendee details are absent from the list response. Organizer
 matches are expected only on the EventKit path.
 
+Repo CLI (runs the working tree; `--timeout` bounds each Calendar engine call):
+
+```bash
+.venv/bin/apple-mail calendar-events \
+  --calendar "Fixture Calendar" \
+  --days 1 \
+  --query fixture \
+  --participant-query "fixture@example.test" \
+  --limit 10 --timeout 5 --json
+```
+
+Generated wrapper (runs the installed plugin):
+
 ```bash
 apple-mail -o json list-events --raw '{
   "calendar":"Fixture Calendar",
@@ -562,6 +631,10 @@ apple-mail -o json list-events --raw '{
   "output_format":"json"
 }'
 ```
+
+Calendar reads need EventKit consent. `.venv/bin/apple-mail calendar-grant` is
+the human-run helper that surfaces the macOS prompt; it is interactive and not
+part of any automated battery.
 
 ## MCP config for agents
 

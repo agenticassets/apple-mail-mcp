@@ -2,6 +2,8 @@
 
 This document provides ready-to-use workflow templates for common email management tasks. Copy and adapt these patterns to your specific needs.
 
+**`move_email` executes on the spot.** Unlike `manage_trash` and `manage_drafts`, its `dry_run` defaults to **`False`**, so any `move_email(...)` snippet below that omits `dry_run` moves mail the moment it runs. Before every bulk move: run the same call with `dry_run=True`, show the user the count and the sample subjects, and move only after they confirm. Archive moves must also pass the Human-Sender Screen in `email-archive-cleanup`'s `SKILL.md` first.
+
 **Action-tool contract:** Mutation examples follow `search-patterns.md`. Use `sender_exact`, `sender_domain`, and `subject_keyword` on **`search_emails`** only. Use `list_inbox_emails` for bounded recent listing (`exclude_replied=True` and `exclude_drafted=True` together when feeding reply candidates, so already-answered and already-drafted rows are both filtered). Pass returned `message_id` / `message_ids` to `reply_to_email`, `move_email`, `manage_trash`, and related action tools. For daily triage, prefer the **`inbox-triage`** skill over keyword-only sweeps below.
 
 ## Quick Triage Workflows
@@ -91,7 +93,11 @@ move_email(
 # confirmation, repeat the same call with dry_run=False.
 
 # 5. Review flagged items for tomorrow
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # Check flags
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 ```
 
 ## Search & Find Workflows
@@ -640,7 +646,10 @@ manage_drafts(
     draft_id="12345"
 )
 
-# 3. Delete outdated drafts
+# 3. Delete outdated drafts. Deleting a draft requires explicit user
+#    confirmation of that specific draft first. This call previews only:
+#    manage_drafts defaults to dry_run=True. Read the preview back to the
+#    user, then repeat the identical call with dry_run=False to delete.
 manage_drafts(
     account="Work",
     action="delete",
@@ -937,7 +946,11 @@ search_emails(subject_keyword="action required", read_status="unread")
 # (Use inbox zero workflow)
 
 # 4. Review weekly tasks
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # Check flags
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 
 # 5. Set up for the week
 manage_drafts(action="list")
@@ -948,10 +961,16 @@ manage_drafts(action="list")
 
 # 1. Complete pending replies
 manage_drafts(action="list")
-# Send or delete drafts by exact draft_id from the list output
+# Review each draft with the user. Sending needs a server that is intentionally
+# not --draft-safe plus explicit approval of that draft; deleting needs explicit
+# confirmation of that draft and a dry_run=False repeat of the preview call.
 
 # 2. Clean up flagged items
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # Review flags
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 update_email_status(
     account="Work",
     action="unflag",

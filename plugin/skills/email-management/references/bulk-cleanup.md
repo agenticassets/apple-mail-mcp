@@ -63,9 +63,9 @@ move_email(message_ids=[...], to_mailbox="Archive/2025")
 ### Empty a defunct project folder
 
 1. `export_emails(scope="entire_mailbox", mailbox="Projects/OldProject", max_emails=50, offset=0)` for the audit trail (page with `offset` if the mailbox holds more than 50 messages; `max_emails` is capped at 50 per call).
-2. `list_inbox_emails` or `search_emails` in that mailbox → collect ids.
-3. Preview with `manage_trash(action="move_to_trash", message_ids=[...])` in batches of ≤50, then repeat each call with `dry_run=False` to act.
-4. Verify, then preview with `manage_trash(action="empty_trash", confirm_empty=True)` and repeat with `dry_run=False` if appropriate.
+2. `search_emails(mailbox="Projects/OldProject", ...)` → collect ids. (`list_inbox_emails` has no `mailbox` parameter; it only reads Inbox.)
+3. Preview with `manage_trash(action="move_to_trash", message_ids=[...], max_deletes=N)` in batches of ≤50, then repeat each call with `dry_run=False` to act. `max_deletes` defaults to **5**, so a batch larger than that needs an explicit cap or most of the ids are silently left behind.
+4. Verify, then preview with `manage_trash(action="empty_trash", confirm_empty=True)` and repeat with `dry_run=False` only after explicit user confirmation.
 
 ## Confirmation Script
 

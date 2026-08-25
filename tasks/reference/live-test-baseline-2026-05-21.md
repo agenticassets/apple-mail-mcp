@@ -85,5 +85,5 @@ The latest generated-wrapper sweep saw the same pattern:
 
 ## References
 
-- Agent workflow: [`docs/AGENT_LIVE_TESTING.md`](../docs/AGENT_LIVE_TESTING.md)
-- Prior audit archive: [`archive/2026-05-21/`](archive/2026-05-21/)
+- Agent workflow: [`docs/AGENT_LIVE_TESTING.md`](../../docs/AGENT_LIVE_TESTING.md)
+- Prior audit archive: [`archive/2026-05-21/`](../archive/2026-05-21/)

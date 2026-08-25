@@ -75,7 +75,7 @@ The MCP server enforces conservative defaults. Confirm with the user before rais
 | `manage_trash(action="delete_permanent")` | 5 messages | Always; this is irreversible |
 | `manage_trash(action="empty_trash")` | hard confirm via `confirm_empty=True`, and `dry_run=False` to act | Always |
 | `move_email` | 50 messages | Any bulk move (`max_moves` > 10); use explicit `max_moves=1` for single-message filing |
-| `update_email_status` | 10 messages | Any bulk update (`max_updates` > 50) |
+| `update_email_status` | 10 messages | Any bulk update (`max_updates` > 10). This tool has **no `dry_run`**, so show the collected ids and get confirmation before the call |
 
 Pattern: identify candidates with `search_emails()`, preview the count and sample, confirm the user's intent, then run the destructive call with an explicit cap.
 

@@ -34,12 +34,43 @@ Use Mail's scripting dictionary as the contract before changing Mail AppleScript
 
 ## Mail Reply Notes
 
-- `reply <message>` creates an `outgoing message`; draft mode can omit `opening window` because the dictionary default is false.
+- `reply <message>` creates an `outgoing message`; the dictionary default for `opening window` is false.
 - `with opening window` is the affirmative AppleScript form. Do not assume `opening window false` compiles.
 - `with reply to all` is the affirmative form for all-recipient replies.
 - `message signature` on an `outgoing message` can be a `signature` or `missing value`; use `missing value` to disable signatures without skipping body insertion.
-- Avoid reading `content of replyMessage` as a string before save in fragile reply flows. Construct the intended outgoing `content` from known source-message fields and assign it once.
-- After saving a reply draft, capture `id of replyMessage` when Mail exposes it and verify that exact Drafts artifact first. Keep bounded newest-Drafts verification as fallback only.
+- After saving a reply draft, capture `id of replyMessage` when Mail exposes it and verify that exact Drafts artifact first. Keep bounded newest-Drafts verification as fallback only. An `exact_id_verified: false` result is **indeterminate, not a pass** — identical repeated test bodies verify against each other, so a duplicate `draft_id` across consecutive runs means the verifier is validating a *prior* run's draft.
+
+### The shipped reply path is windowed and typed — do not "simplify" it back
+
+The general rule above ("prefer the dictionary over UI scripting") has one
+standing, deliberate exception, and it is the reply path in
+`plugin/apple_mail_mcp/tools/compose/`. Assigning `content` on the
+`outgoing message` flattens Mail's rich quoted thread, so `reply_to_email`
+instead uses `reply … with opening window` and types the body into the compose
+window with a focus-guarded System Events keystroke, in chunks. This was a
+product decision (native look over object-model-flattened), not an oversight.
+The windowless object-model path still exists as `native_format=False`, but it
+is gated off by default and is not the path to reason from.
+
+If you touch it, know these before changing anything:
+
+- **The UI scripting is isolated to the focus guard plus the keystroke.** Mail
+  must own the front, because keystrokes go to whatever app is frontmost.
+- **Wait for the WebKit compose editor to drain before saving.** The tail of a
+  long body arrives late, not dropped, and the wait must *scale* with body
+  length. `reply_typing_budget.py` projects that budget in Python from
+  `len(reply_body)`; `typing_scripts.py` sizes its own drain budget from
+  `bodyLength`. Both derive from `constants.typing_settle_attempts` — change one
+  side alone and `AppleScriptTimeout` fires mid-drain, stranding a compose window
+  with the body typed and unsaved.
+- **Chunk size trades speed, not safety.** It is a proxy for keystroke-backlog
+  depth; once the drain is waited for, a larger chunk is slower, not more
+  dangerous.
+- **Do not exit a typing loop on a substring match.** The compose editor already
+  holds Mail's quoted original and signature before typing starts, and
+  `contains` is positionless — use a growth delta against a pre-typing baseline.
+- Read the module docstrings in `reply_scripts.py` and `reply_typing_budget.py`
+  first; they carry the reasoning and the issue references.
 
 ## Source Map
 

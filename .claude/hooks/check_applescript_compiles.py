@@ -51,6 +51,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import inspect
 import json
@@ -72,6 +73,15 @@ PACKAGE = "apple_mail_mcp"
 FULL_SCRIPT_MARKERS = ('tell application "Mail"', 'tell application "Calendar"')
 
 _SAMPLE_DATETIME = datetime(2026, 7, 10, 9, 30)
+
+# ``core.validate_save_path`` rejects any path outside the home directory, and
+# ``save_email_attachment`` runs that check *before* it builds its script — so a
+# ``/tmp`` sample made the tool unreachable. Build the sample from
+# ``Path.home()`` at run time: this repo is public and a literal
+# ``/Users/<name>/...`` path is rejected by
+# ``tools/validators/validate_no_committed_identity.py``. Nothing is ever
+# created here; no script this hook synthesizes is executed.
+_SAMPLE_SAVE_DIR = Path.home() / "Library" / "Caches" / "apple-mail-mcp-compile-check"
 
 # Sample values for parameters that script builders take. Curated on purpose:
 # many of these are spliced into the script *raw* (AppleScript statements or
@@ -170,14 +180,22 @@ SAMPLE_KWARGS: dict[str, object] = {
     "body_html": "<p>Compile check body</p>",
     "from_address": "sender@example.com",
     "draft_id": "12345",
+    # Fields of NativeReplyDraftIdentity, synthesized by _dataclass_sample. Its
+    # ``draft_id`` field reads the same key as the ``draft_id`` parameter above,
+    # which is what makes the two agree — ``_delete_reply_artifact`` returns
+    # before building its script unless ``normalize_message_ids([draft_id])[0]``
+    # equals ``identity.draft_id``, so a numeric, normalization-stable value is
+    # load-bearing, not decorative.
+    "draft_rfc_message_id": "<draft-12345@example.com>",
+    "source_rfc_message_id": "<source-abc123@example.com>",
     "reply_subject": "Compile check subject",
     "reply_body": "Compile check body",
     "from_mailbox": "INBOX",
     "to_mailbox": "Archive",
     "dest_ref": 'mailbox "Archive" of targetAccount',
-    "save_path": "/tmp/apple-mail-mcp-compile-check/attachment.bin",
+    "save_path": str(_SAMPLE_SAVE_DIR / "attachment.bin"),
     "attachment_name": "attachment.bin",
-    "save_directory": "/tmp/apple-mail-mcp-compile-check",
+    "save_directory": str(_SAMPLE_SAVE_DIR),
     # Export
     "safe_format": "txt",
     "safe_save_dir": "/tmp/apple-mail-mcp-compile-check",
@@ -217,8 +235,20 @@ SAMPLE_KWARGS: dict[str, object] = {
 # does not have.
 FUNCTION_KWARG_OVERRIDES: dict[str, dict[str, object]] = {
     "_html_post_paste_mail_block": {"body": ""},
-    # "scope" names an export scope here and a statistics scope there.
-    "export_emails": {"scope": "entire_mailbox"},
+    # attachment_index selects within ONE message, so the tool refuses the
+    # shared two-id ``message_ids`` sample with AMBIGUOUS_ATTACHMENT_SELECTOR
+    # before it builds anything.
+    "save_email_attachment": {"message_ids": ["12345"]},
+    # Three coordinated values to reach the one script export_emails builds
+    # itself: every other scope delegates to a ``*_script`` builder in
+    # ``export_helpers.py`` that is compiled directly there, so "single_email"
+    # is the only path with anything left to check here; a non-None
+    # ``message_ids`` short-circuits into the id-export path first; and
+    # ``include_attachments`` (True by default synthesis) is refused for any
+    # format but "eml" -- which is also the variant that splices in the
+    # attachment-bundle blocks. "scope" also names a statistics scope
+    # elsewhere, which is why it needs a value here at all.
+    "export_emails": {"scope": "single_email", "message_ids": None, "format": "eml"},
 }
 
 # Parameters carrying a spliced AppleScript fragment rather than a value. An
@@ -247,24 +277,20 @@ def _is_builder_name(name: str) -> bool:
 # built inline inside a tool body (an f-string local, not a callable
 # ``*_script`` builder), so there is nothing to call without executing the tool
 # itself — which this hook must never do. These are real coverage debt, not
-# clean bills of health. Extracting a ``*_script`` builder is the fix; each
-# removal from this ledger is a permanent gain, enforced by
+# clean bills of health. Extracting a ``*_script`` builder is one fix; the
+# other is a curated ``SAMPLE_KWARGS`` / ``FUNCTION_KWARG_OVERRIDES`` entry
+# that gets the tool past its own pre-script validation. Each removal from this
+# ledger is a permanent gain, enforced by
 # tests/infra/test_applescript_compile_hook.py. NOTHING may be added here
 # without also adding the reason, and a module that is *not* listed and cannot
 # be checked exits non-zero instead.
-UNCHECKABLE: dict[str, str] = {
-    "tools/analytics/export.py": (
-        "export_emails() returns before it reaches the executor under synthetic "
-        "arguments; its four script builders live in export_helpers.py and are checked there"
-    ),
-    "tools/compose/reply_runner.py": (
-        "_delete_reply_artifact() needs a NativeReplyDraftIdentity instance, "
-        "which this hook cannot synthesize from a type annotation"
-    ),
-    "tools/manage/attachments.py": (
-        "save_email_attachment() rejects the synthetic save_path before building its script"
-    ),
-}
+#
+# Empty is the goal state, and it is currently empty: the last three entries
+# (analytics/export.py, compose/reply_runner.py, manage/attachments.py) all
+# turned out to be reachable once their tools were handed arguments they
+# accept. Do not read emptiness as "the ledger is unused" — an unreachable
+# module that is not listed here blocks, which is what keeps this dict honest.
+UNCHECKABLE: dict[str, str] = {}
 
 
 class _ExecutorInvoked(BaseException):
@@ -377,12 +403,47 @@ def _annotation_names(annotation: Any) -> set[str]:
     return {part.strip() for part in text.split() if part.strip()}
 
 
+def _dataclass_sample(annotation: Any) -> tuple[bool, object]:
+    """Return ``(found, instance)`` for a parameter annotated with a repo dataclass.
+
+    A value object such as ``NativeReplyDraftIdentity`` cannot be synthesized
+    from its annotation alone, and the function that takes one
+    (``_delete_reply_artifact``) returns before it builds a single line of
+    AppleScript unless the instance *agrees with its sibling arguments* —
+    ``identity.draft_id`` must equal ``normalize_message_ids([draft_id])[0]``.
+    Building each field from ``SAMPLE_KWARGS`` by field name is what keeps them
+    in agreement: the field and the parameter read the same key. Fields with a
+    default are left at it, and a required field with no sample makes the whole
+    parameter unsynthesizable, which is reported loudly rather than skipped.
+
+    Restricted to dataclasses defined in this package — a foreign one carries
+    invariants this hook knows nothing about.
+    """
+    if not (isinstance(annotation, type) and dataclasses.is_dataclass(annotation)):
+        return False, None
+    if not getattr(annotation, "__module__", "").startswith(PACKAGE):
+        return False, None
+    kwargs: dict[str, object] = {}
+    for field_info in dataclasses.fields(annotation):
+        if field_info.name in SAMPLE_KWARGS:
+            kwargs[field_info.name] = SAMPLE_KWARGS[field_info.name]
+        elif field_info.default is dataclasses.MISSING and field_info.default_factory is dataclasses.MISSING:
+            return False, None
+    try:
+        return True, annotation(**kwargs)
+    except Exception:
+        return False, None
+
+
 def _synthesize(name: str, param: inspect.Parameter) -> tuple[bool, object]:
     """Return ``(found, value)`` for one parameter."""
     if name in SAMPLE_KWARGS:
         return True, SAMPLE_KWARGS[name]
     if name in FRAGMENT_PARAM_NAMES or name.endswith(FRAGMENT_PARAM_SUFFIXES):
         return True, ""
+    found, instance = _dataclass_sample(param.annotation)
+    if found:
+        return True, instance
     names = _annotation_names(param.annotation)
     if names & {"list", "dict", "set", "tuple", "Callable"}:
         # A container's element semantics are builder-specific; guessing one

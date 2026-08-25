@@ -2,7 +2,7 @@
 
 > **Note:** Subject/sender target selectors on action tools now hard-fail with `TARGET_SELECTOR_DEPRECATED` before any scan. `allow_filter_scan=True` applies to date/bulk paths only. Current policy: [`docs/CLAUDE-conventions.md`](../../docs/CLAUDE-conventions.md) and [`../archive/2026-06/shipped/agent-guidance-audit/agent-guidance-audit-2026-06-30.md`](../archive/2026-06/shipped/agent-guidance-audit/agent-guidance-audit-2026-06-30.md).
 
-**Status:** Phase 1 mutation ID paths **shipped in v3.7.0**. Filter-based mutation paths are gated behind `allow_filter_scan=True` (default `False`); see [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md) § ID-first mutations and scan opt-in gates.
+**Status:** Phase 1 mutation ID paths **shipped in v3.7.0**. Filter-based mutation paths are gated behind `allow_filter_scan=True` (default `False`); see [`docs/CLAUDE-conventions.md`](../../docs/CLAUDE-conventions.md) § ID-first mutations and scan opt-in gates.
 
 ## Current state (audit) — updated 2026-06-09
 

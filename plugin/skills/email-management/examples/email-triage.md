@@ -205,7 +205,7 @@ get_mailbox_unread_counts(summary_only=True)
    - Read chronologically to understand what happened
 
 5. **Acknowledge Return (10 min)**
-   - Send quick "I'm back" replies to important threads
+   - Draft quick "I'm back" replies to important threads (`reply_to_email` saves a draft; the user reviews and sends)
    - Set expectations: "Catching up, will respond by [date]"
 
 6. **Full Triage (30 min)**
@@ -278,7 +278,11 @@ update_email_status(action="mark_read", message_ids=[...], max_updates=20)
 **Unflag old items** (weekly cleanup):
 ```
 # Find flagged items
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # Look for flags manually
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 # Unflag completed ones
 update_email_status(action="unflag", message_ids=[...], max_updates=10)
 ```

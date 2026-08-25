@@ -1,6 +1,6 @@
 ---
 name: "finalize-apple-mail-mcp"
-description: "Final codebase review and doc/manifest sync for apple-mail-mcp after feature work. Starts with plugin-validator to fix manifest and doc drift, then pytest, CLAUDE.md/README/skills/MCPB sync, and commit/push when the user asks. Use when finishing a change, before release, when the user says finalize, sync docs, update manifests, or ship the branch."
+description: "Final codebase review and doc/manifest sync for apple-mail-mcp after feature work. Starts with plugin-validator to fix manifest and doc drift, then pytest, code-simplifier, CLAUDE.md/README/skills/MCPB sync, a required `dev-check.sh release` artifact rebuild, and finally commit and push to close its own loop. Use when finishing a change, before release, when the user says finalize, sync docs, update manifests, or ship the branch."
 ---
 
 # Finalize apple-mail-mcp
@@ -165,7 +165,7 @@ Update **only** what the code change still affects after step 1. Do not rewrite 
 
 **Manifest rules** (see `tools/CLAUDE.md`):
 
-- Versions — **seven files**: `pyproject.toml`, `plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`, `plugin/.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json` `plugins[0].version`, `server.json`, `apple-mail-mcpb/manifest.json`
+- Versions — **seven files**: `pyproject.toml`, `plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`, `plugin/.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json` `plugins[0].version`, `server.json` (**both** the top-level `version` **and** `packages[0].version` — `validate_manifests.py` checks each separately), `apple-mail-mcpb/manifest.json`
 - The Cursor manifest is enforced like the rest — `tools/validators/validate_manifests.py` checks `plugin/.cursor-plugin/plugin.json` `version`; omitting it fails the gate
 - Do **not** bump `metadata.version` in marketplace.json
 - MCPB `tools[]` names must match registered tool function names
@@ -188,14 +188,28 @@ If step 5 edited any `plugin/skills/*/SKILL.md`, delegate to `plugin-dev:skill-r
 bash tools/gates/dev-check.sh release
 ```
 
-That tier runs `validate_manifests` + `pytest` + the wrapper-surface check, then invokes `tools/gates/build-artifacts.sh` to:
+That tier runs, in this order:
+
+1. **Identity scan** — `tools/validators/validate_no_committed_identity.py`. Fails on a new real email address, absolute `/Users/<name>/…` path, or uppercase account UUID in any tracked text file.
+2. **Lint (fatal)** — `ruff check` + `ruff format --check` + `mypy --strict` over `plugin/apple_mail_mcp/`. These are hard failures on this tier, not warnings; needs `.venv/bin/pip install -e '.[dev]'`.
+3. **Module line budget** warn report (the 600 LOC *regression* is hard-gated inside `validate_manifests.py`).
+4. **`tools/gates/build-artifacts.sh`** — the rebuild, detailed below.
+5. **`validate_tasks_layout.py`** and **`validate_repo_root.py`** (a single stray untracked file at the repo root fails this).
+6. **pytest** + the **test-count gate** against `tools/expected_test_count.txt` (fails on drift and prints the new number).
+7. **Wrapper-surface check** (`check_wrapper_surface.py`).
+8. **`tools/gates/verify-offline-runtime.sh`** against **both** `apple-mail-plugin.zip` and `apple-mail-mcp-v{VERSION}.mcpb`.
+
+Step 4 (`build-artifacts.sh`) is what actually regenerates the three artifacts:
 
 1. Prune stale `apple-mail-mcp-v*.mcpb` at repo root (keeps only the current `pyproject.toml` version).
 2. Rebuild `apple-mail-plugin.zip` with the README exclusion list (`venv`, `__pycache__`, `*.pyc`, `.DS_Store`, `CLAUDE.md`, `.env*`, logs, temp/backup files).
 3. Copy the zip bytes to `apple-mail.plugin` so the Cowork artifact stays byte-identical to the marketplace zip.
 4. Rebuild `apple-mail-mcp-v{VERSION}.mcpb` via `apple-mail-mcpb/build-mcpb.sh` (which prefers official `mcpb pack`).
 5. Re-run `APPLE_MAIL_REQUIRE_DIST_ARTIFACTS=1 bash tools/gates/validate_manifests.sh`; fails if any of the three artifacts is missing, stale older `.mcpb` bundles remain, or the `.plugin` bytes diverge from the `.zip`.
-6. Run `mcpb unpack` + `mcpb validate` as a final structural smoke (if `mcpb` CLI present).
+6. Run `mcpb unpack` + `mcpb validate` as an MCPB structural smoke (skipped with a printed notice if neither `mcpb` nor `npx` is available).
+7. Unzip `apple-mail-plugin.zip` and run `claude plugin validate --strict` on it (skipped with a printed notice if the `claude` CLI is not on `PATH`). Cowork promotes warnings to errors, so `--strict` is the mode that matches the installer.
+
+Because pytest runs *after* the rebuild on this tier, a green run also proves the artifacts were built from a tree that passes the suite.
 
 If any step fails, fix the underlying issue; do not commit stale artifacts. **Never delete `apple-mail.plugin` or build it manually**; it must come from the build script's byte-copy, not a hand-zip, or the parity check rejects it.
 

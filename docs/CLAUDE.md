@@ -65,15 +65,17 @@ Workflow entry points are skills-only. Do not add or restore legacy slash comman
 3. Safe commands — batteries (`quick-check`, `perf-test`, `smoke-test`) and individual probes
 4. Post-edit workflow (fast loop → full perf gate + thresholds)
 5. Unit tests vs live Mail (CI = mocked only)
-6. Opt-in fixture drills (EML export, guarded reply cleanup, HTML compose subject/focus)
+6. Opt-in fixture drills (repo-CLI `draft-verify-smoke`, EML export, guarded reply cleanup, HTML compose subject/focus, calendar participant filter)
 7. MCP config for agents (`mcp-config --repo`, draft-safe)
 
 ## CI vs live
 
-Local CI-equivalent gates never touch Mail.app. They run manifest validation,
-the **module line budget** report, and pytest
-([`tools/CLAUDE.md`](../tools/CLAUDE.md)). Live testing is manual on macOS after
-local changes.
+Local CI-equivalent gates never touch Mail.app. `bash tools/gates/dev-check.sh`
+runs the **committed-identity gate** first
+([`tools/validators/validate_no_committed_identity.py`](../tools/validators/validate_no_committed_identity.py)),
+then manifest validation, the **module line budget** report, pytest, and the
+test-count drift gate ([`tools/CLAUDE.md`](../tools/CLAUDE.md)). Live testing is
+manual on macOS after local changes.
 
 ## Related
 

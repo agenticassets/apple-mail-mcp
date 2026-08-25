@@ -226,7 +226,8 @@ maintenance and worse for independent verification, and the right split is not
 
 ### `export_emlx.py` sits outside the repo's line-budget gate
 
-It is around 730 lines. This repo warns at 600 LOC and fails on baseline
+It is around 980 lines (976 at the time of writing; recount with `wc -l`
+rather than trusting this number). This repo warns at 600 LOC and fails on baseline
 regression, but `tools/validators/check_module_line_budget.py` only scans
 `plugin/apple_mail_mcp/` and `tools/` - `.agents/skills/*/scripts/` is not covered.
 
@@ -238,8 +239,8 @@ change unilaterally:
   Consistent with existing convention, and applies the same discipline everywhere.
 - **Leave skills out of scope deliberately.** Skill scripts are standalone, are
   copied next to archives to run years later with no package context, and a single
-  self-contained file is genuinely easier to hand someone. A clear 730-line script
-  can beat six files that must be kept together.
+  self-contained file is genuinely easier to hand someone. A clear single-file
+  script can beat six files that must be kept together.
 
 I lean toward the second for *this* script specifically, because being copyable as
 one file into `20-tools/` is a real property worth protecting. But the inconsistency

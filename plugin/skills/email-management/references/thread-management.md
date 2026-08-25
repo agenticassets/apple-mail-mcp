@@ -37,7 +37,9 @@ The result is already chronological. Read top to bottom for context.
 
 ### Find the latest message in a long thread
 
-The last entry returned by `get_email_thread()` is the most recent. Prefer replying with `reply_to_email(message_id=...)` when search or list tools already returned the Mail id; pass `message_id`; if no id is known, run search or list first. Default `native_format=True` on replies (see **`email-drafting`** for Accessibility and `REPLY_WINDOW_FOCUS_FAILED`). For bulk human review, use `mode="open"` so each saved draft stays visible in Mail.
+The last entry returned by `get_email_thread()` is the most recent. Prefer replying with `reply_to_email(message_id=...)` when search or list tools already returned the Mail id; pass `message_id`; if no id is known, run search or list first. Default `native_format=True` on replies (see **`email-drafting`** for Accessibility and `REPLY_WINDOW_FOCUS_FAILED`).
+
+**Bulk drafting must use `mode="draft"`, never `mode="open"`.** Every `mode="open"` call leaves a compose window open, and at high counts NSWindowServer runs out of resources. The tools enforce a cap of **5** simultaneous open compose windows and refuse the sixth with `TOO_MANY_OPEN_DRAFTS`. `mode="draft"` saves quietly to Drafts with no window. For human review of a batch, draft them all and then review the Drafts folder (`manage_drafts(action="list")` plus `verify_draft` / `verify_drafts`), or reopen one at a time with `manage_drafts(action="open", draft_id=...)`. Reserve `mode="open"` for a single draft the operator wants to see immediately.
 
 ## Cross-Account Threads
 

@@ -33,7 +33,7 @@ For each message, in **recency order**:
 ## Anti-patterns
 
 - Do **not** open with `date_from` weeks or months ago and draft replies to stale threads while newer inbox mail is unreviewed.
-- Do **not** batch-draft many old threads in one pass because they appear in a broad `sender_domain` or `utulsa.edu` search.
+- Do **not** batch-draft many old threads in one pass because they appear in a broad `sender_domain` search.
 - Do **not** treat **unread** alone as "needs reply" when the message is weeks old and newer human mail is still in queue.
 - Do **not** fan out `get_needs_response(days_back=30)` plus `list_inbox_emails(max_emails=25)` plus wide `search_emails` in parallel on the first pass.
 

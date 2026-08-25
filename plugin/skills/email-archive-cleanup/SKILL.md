@@ -13,12 +13,12 @@ Archiving is for promotional and marketing mail, spam, automated notifications a
 
 Never propose archiving a message from a real person the operator corresponds with (a human sender, especially anyone the operator has emailed or replied to, or who addresses the operator by name) unless confident the message is spam. Apply this screen while building the candidate list during evidence-gathering, before any id reaches `move_email(dry_run=True, ...)`; it is a filter on what gets proposed, not a warning attached afterward.
 
-Every signal below uses a field a tool actually returns. Do not rely on headers or filters the tools do not expose (there is no `List-Unsubscribe` field and no direct sent-to filter).
+Every signal below uses a field a tool actually returns. Do not rely on headers or filters the tools do not expose (there is no `List-Unsubscribe` field and no direct sent-to filter). `search_emails` and `list_inbox_emails` rows also do **not** carry `in_reply_to` or `references`; those threading headers are emitted empty on discovery rows and only come back from `get_email_by_id` / `get_email_by_ids` / `get_email_thread`.
 
 **Keep visible, do not archive, when the sender shows:**
 
 - A personalized greeting or one-to-one tone in `content_preview` rather than a bulk template
-- A reply thread the operator participated in: `in_reply_to` or `references` is populated on the candidate message
+- A thread the operator already engaged with: `was_replied_to=true` (Mail's native "was replied to" property, always present on every discovery row) or `has_draft=true` (a correlated reply draft exists)
 - A human-looking From name and address, not `noreply@`, `no-reply@`, `notifications@`, `marketing@`, or a bulk ESP domain
 - No unsubscribe link or marketing/list footer visible in `content_preview`
 - Best-effort correspondence history: there is no direct sent-to filter, so `search_emails` cannot ask "did the operator ever email this address." When the stakes are high, search `mailbox="Sent"` for a bounded window and fetch full messages with `get_email_by_id`/`get_email_by_ids` to check the `to` field for the correspondent's address (`search_emails` results always leave `to` empty). Treat missing history as inconclusive, not as evidence the sender is automated.
@@ -28,7 +28,7 @@ Every signal below uses a field a tool actually returns. Do not rely on headers 
 - `noreply@`, `no-reply@`, `notifications@`, `marketing@`, or a known bulk ESP domain
 - An unsubscribe link or marketing/list footer visible in the message body preview (`content_preview`), a promotional template, or newsletter formatting
 - An automated receipt, order or shipping confirmation, or calendar/system notification
-- A one-to-one message versus a bulk blast: a generic salutation or template body in `content_preview` with no reply thread (`in_reply_to`/`references` both empty) points toward automated or bulk mail
+- A one-to-one message versus a bulk blast: a generic salutation or template body in `content_preview` with no engagement (`was_replied_to=false` and `has_draft=false`) points toward automated or bulk mail. Treat `has_draft=null` as unknown, not as "no draft"; the bounded Drafts scan was skipped or truncated
 - Content that is confidently spam
 
 When it is uncertain whether a sender is a real person or an automated/bulk source, default to NOT archiving and leave the message in the inbox. Bias toward keeping human mail visible; archive only when confident the message is automated, promotional, or spam. If a candidate batch mixes human and automated senders, split it: drop the ambiguous or human-looking ids before quoting a dry-run total, and archive only the confidently automated or promotional subset.
@@ -79,7 +79,7 @@ Sequence:
 
 For archive campaigns, apply the **Human-Sender Screen** (above) to the preview results now: drop any human-looking or ambiguous sender from the candidate list before it becomes an id to move. Always quote expected totals after dry runs.
 
-### 3. Simulate Mutations (`dry_run=True`, `message_ids` required)
+### 3. Simulate Mutations (`dry_run=True` on `move_email` / `manage_trash`, `message_ids` required)
 
 Mandatory first pass after collecting ids from step 2. For archive moves, `ids` must already be screened: build it only from senders that passed the Human-Sender Screen, not the raw preview.
 
@@ -89,7 +89,9 @@ ids = [e["message_id"] for e in preview["items"]]  # search_emails JSON uses "it
 move_email(dry_run=True, message_ids=ids, to_mailbox="Archive", max_moves=50)
 ```
 
-Trash paths: **`manage_trash(action="move_to_trash", dry_run=True, message_ids=ids, ...)`** before committing. Status paths: **`update_email_status(dry_run=True, message_ids=ids, action="mark_read", ...)`**.
+Trash paths: **`manage_trash(action="move_to_trash", dry_run=True, message_ids=ids, ...)`** before committing (`dry_run` defaults to `True` on `manage_trash`, and to `False` on `move_email` — pass it explicitly on moves).
+
+**`update_email_status` has no `dry_run`.** It is the one action tool with no simulate mode, so there is nothing to preview against: the safe path is the id list itself. Show the user the collected ids (with subjects and senders from the search preview that produced them) and get confirmation *before* the call, keep `max_updates` at or below the batch you just showed, and never pass `allow_filter_scan=True` on a status update the user has not seen enumerated. Read/flag changes are reversible (`mark_unread`, `unflag`), which is why the tool ships without a preview; a wrong batch is still a wrong batch, so confirm first.
 
 Quote expected totals from the dry-run response. Discuss raising `max_moves` / `max_deletes`; defaults protect against catastrophe. If you hit `TARGET_SELECTOR_DEPRECATED`, you used a search selector on an action tool. Go back to search/list and collect ids.
 

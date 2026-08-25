@@ -23,9 +23,15 @@ A change here lands in all three. Treat tool source as a public API.
 - **AppleScript-in-Python f-strings is parse-checked on edit** by
   `.claude/hooks/check_applescript_compiles.py` (the 3.3.0 awaiting-reply
   regression class). The check runs offline via `osacompile`.
-- **Live-verify tool changes** against the TU Exchange inbox (24K msgs)
-  before declaring done; mocked tests can pass while the AppleScript
-  itself is broken at runtime.
+- **Live-verify tool changes against a REACHABLE account** before declaring
+  done; mocked tests can pass while the AppleScript is broken at runtime. Use
+  the production test account in `tasks/CLAUDE.md` § Production test account
+  (`export DEFAULT_MAIL_ACCOUNT=...`), confirm it appears in
+  `.venv/bin/apple-mail accounts --json`, then run a bounded check and require
+  real rows. **An empty result from an unreachable account is NOT a pass** —
+  the retired TU Exchange mailbox is the known trap: server access ended, so
+  every query returns a confident zero-row result that reads as a green gate.
+  Never verify against it.
 - **Before commits that touch `plugin/`, manifests, `pyproject.toml`,
   or release artifacts:** `bash tools/gates/dev-check.sh release` — rebuilds
   both distributables, runs validator + pytest + module line budget + mcpb smoke.
@@ -45,7 +51,10 @@ A change here lands in all three. Treat tool source as a public API.
 - **`tasks/` layout (mandatory):** read `tasks/todo.md` then `tasks/CLAUDE.md`
   § Agent requirements. New planning artifacts go under `tasks/active/`,
   `tasks/reference/`, or `tasks/archive/` only — never loose `*.md` at
-  `tasks/` root. CI enforces via `tools/validators/validate_tasks_layout.py`.
+  `tasks/` root. GitHub-hosted Actions are disabled; the local pre-commit hook
+  (`tools/gates/pre-commit-validate.sh` → `bash tools/gates/dev-check.sh default`)
+  runs `tools/validators/validate_tasks_layout.py`, and
+  `tests/infra/test_tasks_layout.py` enforces it in pytest.
 
 ### Quick-pick by change type
 
@@ -57,7 +66,7 @@ A change here lands in all three. Treat tool source as a public API.
 | Test gaps (script parse, JSON contract drift) | testing-python · python-testing-patterns |
 | Async/asyncio (`asyncio.run()`-in-loop class) | async-python-patterns |
 | Code review pass before ship | reviewing-code · code-review · python-anti-patterns |
-| Live confirmation a change actually works | verify · run |
+| Live confirmation a change actually works | run · docs/AGENT_LIVE_TESTING.md |
 
 ### Full Python-development skill index — use these PROACTIVELY, not as last resort
 
@@ -92,8 +101,7 @@ they are cheap.
 | `reviewing-code`                         | Second-pass review focused on API + pattern clarity |
 | `code-review`                            | Run review on current git diff at chosen effort level |
 | `security-review`                        | Touching auth, file IO, secrets, destructive operations |
-| `verify`                                 | Confirming a change actually works in the running app |
-| `run`                                    | Launching the project (`apple-mail` CLI or MCP server) |
+| `run`                                    | Launching the project (`apple-mail` CLI or MCP server); pair with `docs/AGENT_LIVE_TESTING.md` to confirm a change actually works |
 | `mcp-builder`                            | New MCP tool design — schema, error contract, naming |
 | `plugin-dev:plugin-validator` (agent)    | After tool-count or manifest changes |
 | `plugin-dev:skill-reviewer` (agent)      | After editing `plugin/skills/*/SKILL.md` |

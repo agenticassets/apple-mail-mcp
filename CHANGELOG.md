@@ -45,6 +45,45 @@ Adversarial review of the compose surface, weighted toward
 chased: a check that could not fail, a locator mistaken for evidence, or a
 failure reported as prose to a caller parsing JSON.
 
+- **macOS autocorrect could wedge Mail for as long as the machine stayed
+  untouched.** A native reply of any real length made Mail stop answering
+  *every* AppleScript call — not just the reply — while the process stayed
+  alive, kept syncing IMAP, and kept answering Accessibility requests normally.
+  Sampling a wedged Mail put all 2,293 main-thread samples inside
+  `-[NSCorrectionPanel _interceptEvents]`: macOS autocorrect / inline
+  predictions react to the synthesized keystrokes and open a correction panel,
+  whose **nested modal event loop pumps UI events but does not dispatch Apple
+  Events**. The reply's next statement is a `tell application "Mail"`, which
+  then never returns; `run_applescript` SIGKILLs the subprocess at its deadline,
+  so the failure arrived with no script state and a compose window left behind.
+  Measured: a 1,200-character reply timed out at 120.2 s and Mail refused all 29
+  probes over the following 10 minutes. The typing loop now dismisses the panel
+  after every chunk, which also *rejects* the suggestion — the same substitution
+  that corrupts typed bodies. The same reply now completes in 30.9 s, verified.
+  Because a correction panel is an `NSPanel` and not an `AXSheet`, it is
+  invisible to Accessibility: a clean AX window list is **not** evidence that no
+  modal is up.
+- **`TYPING_CHUNK_SIZE` raised 80 → 160**, making a 2,400-character native reply
+  about 19% faster (39.0 s → 31.5 s) with no change in behavior. **If native
+  replies start failing `REPLY_BODY_MISMATCH`, set it to 120** — the pre-tested
+  fallback, verified 4/4 at ~33.9 s, one step further from the corruption cliff
+  and costing ~2.4 s. That fallback is documented at the top of the constant so
+  it is found from the failure, not from the changelog. The chosen value has no
+  *tested* margin below the cliff; the risk is accepted because the failure mode
+  is loud (the full-body verifier catches it) rather than a quietly wrong email.
+- **The sweep behind that change.** A controlled
+  sweep holding body length fixed and varying only chunk size found that larger
+  chunks corrupt the body. At 2,400 characters, sizes 200 and 250 failed
+  `REPLY_BODY_MISMATCH` on 4 of 4 runs, while 80, 120, and 160 verified on 9 of
+  9 — a cliff between 160 and 200, not a gradient. The failures were also
+  *slower* (69-71 s against 31-39 s), because a mismatch burns the retype path,
+  so the larger sizes are worse on both speed and safety. Larger chunks type
+  more text between panel dismissals, so a substitution lands before the
+  rejection does. At 1,200 characters every size passed, including 250: a short
+  body does not discriminate, and re-testing this needs at least 2,400
+  characters. Full sweep and the case for 120 as the only defensible change:
+  `tasks/active/native-reply/live-timing-and-frontmost-2026-08-24.md` § 4.
+
 - **The native reply identity capsule parser rejected every valid capsule.**
   The capsule is four pipe-separated fields whose fourth names the evidence
   class; the parser instead required that fourth field to be literally

@@ -7,6 +7,7 @@ module without touching any I/O or patched name.
 
 from apple_mail_mcp.tools.compose.constants import (
     QUOTE_PROOF_UNAVAILABLE,
+    REPLY_ACCESSIBILITY_UNAVAILABLE,
     TYPING_CHUNK_SIZE,
     TYPING_INTER_CHUNK_DELAY,
 )
@@ -268,6 +269,7 @@ set guardSEAnswered to false
 set composeFocusVerified to false
 set editorFocusResult to ""
 set replyWindowRaised to false
+set frontmostBlockedBy to ""
 
 try
     tell application "Mail"
@@ -319,6 +321,25 @@ try
         end if
         set replySubject to derivedReplySubject
         set replyBodyText to do shell script "cat " & quoted form of bodyTempPath
+        -- Bring Mail to the front *before* the reply command, not just after:
+        -- the compose window should open into an already-frontmost app so the
+        -- adoption scan and the focus guard below start from a settled front.
+        -- Diagnostic only here -- a failure is reported by the guard, which is
+        -- where a background Mail actually becomes fatal.
+        set frontmostBlockedBy to my frontmostBlockedApp(my ensureMailFrontmost())
+        -- Preflight the Accessibility bridge *before* opening a compose window.
+        -- Typing needs System Events to see Mail's windows; when it cannot, every
+        -- later step is doomed, and finding that out after the `reply` command
+        -- costs a leaked compose window plus four focus attempts, then reports it
+        -- as a focus problem. Only a successful count of exactly 0 aborts here --
+        -- "unknown" means the probe itself failed and is left to the guard.
+        if replyBodyText is not "" then
+            set axWindowCount to my accessibilityWindowCount()
+            if axWindowCount is "0" then
+                {cleanup_script}
+                return "{REPLY_ACCESSIBILITY_UNAVAILABLE}" & return & "Detail: System Events reports 0 windows for Mail"
+            end if
+        end if
         set preReplyWindowIds to my mailWindowIdSnapshot()
 
         -- Native Mail reply: Mail builds its own rich quoted thread and inserts the
@@ -382,6 +403,10 @@ try
             set replyWindowRaised to my raiseNativeReplyWindowSafely(replyWindowId, replySubject, derivedReplySubject)
         end tell
         delay 0.3
+        -- Re-assert the front on every attempt. Raising the window inside Mail
+        -- does not make Mail the frontmost *application*, and anything the user
+        -- (or another automation) does between attempts can take the front back.
+        set frontmostBlockedBy to my frontmostBlockedApp(my ensureMailFrontmost())
         tell application "System Events"
             tell process "Mail"
                 -- Without an Accessibility grant this whole block throws, which
@@ -450,6 +475,14 @@ try
             if typingInterruptedDetail is not "" then
                 set abortCode to "TYPING_INTERRUPTED"
                 set abortDetailText to typingInterruptedDetail
+            else if frontmostBlockedBy is not "" then
+                -- Checked before the window/focus branches: when another app
+                -- held the front, window adoption and AX focus were both being
+                -- asked of a background Mail, so their failures are symptoms.
+                -- Reporting the symptom sends the caller to "grant
+                -- Accessibility" when the real fix is "stop stealing the front".
+                set abortCode to "GUARD_ABORT_FRONTMOST"
+                set abortDetailText to "Mail could not be brought to the front; " & frontmostBlockedBy & " held it"
             else if replyWindowId is "" then
                 set abortCode to "GUARD_ABORT_WINDOW"
                 set abortDetailText to editorFocusResult

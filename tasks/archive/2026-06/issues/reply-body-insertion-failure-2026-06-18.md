@@ -14,7 +14,7 @@ Environment:
 - Account: `TU - Cayman`
 - Source message id: `83957`
 - Source subject: `QM 4862 Independent Study`
-- Source sender: `bryson-crow@utulsa.edu`
+- Source sender: `recipient@example.com`
 - Tool: `mcp__apple_mail.reply_to_email`
 - Mode: `draft`
 
@@ -39,7 +39,7 @@ Error: Reply draft was created, but Mail did not verify it in the newest Drafts 
 Draft verification:
 
 - Draft id: `84050`
-- To: `bryson-crow@utulsa.edu`
+- To: `recipient@example.com`
 - Subject: `Re: QM 4862 Independent Study`
 - Threading headers present: `in_reply_to` and `references`
 - `has_quoted_original`: true
@@ -56,7 +56,7 @@ Error: Reply draft was created, but Mail did not verify it in the newest Drafts 
 Draft verification:
 
 - Draft id: `84053`
-- To: `bryson-crow@utulsa.edu`
+- To: `recipient@example.com`
 - Subject: `Re: QM 4862 Independent Study`
 - Body problem: same signature or quote-only failure, intended reply body absent.
 

@@ -8,7 +8,7 @@ Cross-session planning artifacts. In-conversation work uses ephemeral task lists
 
 ## Agent requirements (mandatory)
 
-Every coding agent working in this repo **must** follow the `tasks/` layout. CI enforces it via `tools/validators/validate_tasks_layout.py` and `tests/infra/test_tasks_layout.py`.
+Every coding agent working in this repo **must** follow the `tasks/` layout. GitHub-hosted Actions are disabled (see [`tests/CLAUDE.md`](../tests/CLAUDE.md) § Local gates vs live Mail), so enforcement is local: the checked-in pre-commit hook runs [`tools/gates/pre-commit-validate.sh`](../tools/gates/pre-commit-validate.sh) → `bash tools/gates/dev-check.sh default`, which runs [`tools/validators/validate_tasks_layout.py`](../tools/validators/validate_tasks_layout.py); [`tests/infra/test_tasks_layout.py`](../tests/infra/test_tasks_layout.py) enforces the same rule in pytest.
 
 ### Read order
 

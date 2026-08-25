@@ -108,12 +108,59 @@ on resolveReplyBodyEditor(expectedTitle, derivedTitle, expectedWindowId, allowEd
                 end try
                 if editorIsFocused or focusedElementMatches then return {{"focused", replyEditor}}
                 return {{"reply_editor_not_focused", missing value}}
-            on error
-                return {{"reply_editor_focus_error", missing value}}
+            on error axErrMsg
+                -- Carry Mail's own words. Every other branch here returns a
+                -- status that names what was wrong; this one used to return a
+                -- bare label, so the single most common native-reply failure
+                -- arrived in the field with nothing to diagnose it by. The
+                -- `entire contents` walk above is the usual thrower (it times
+                -- out on a busy compose window), and that is indistinguishable
+                -- from a missing Accessibility grant without this text.
+                return {{"reply_editor_focus_error:" & axErrMsg, missing value}}
             end try
         end tell
     end tell
 end resolveReplyBodyEditor
+
+on dismissTextSuggestionPanel()
+    -- macOS autocorrect / inline predictions react to the synthesized keystrokes
+    -- and open an NSCorrectionPanel. Its ``_interceptEvents`` runs a NESTED MODAL
+    -- event loop that pumps UI events but does not dispatch Apple Events, so the
+    -- next ``tell application "Mail"`` -- the one opening chunkFocusBlockedName --
+    -- blocks until something dismisses the panel. Measured live: no recovery in
+    -- 10 minutes, -1712 on all 29 probes, main thread 100% inside
+    -- ``-[NSCorrectionPanel _interceptEvents]``. The reply then dies as a
+    -- context-free subprocess SIGKILL and leaves its compose window behind.
+    --
+    -- Escape REJECTS the suggestion, which is also the correct answer for the
+    -- other failure this same subsystem causes: autocorrect silently rewriting
+    -- the typed body (REPLY_BODY_MISMATCH).
+    --
+    -- Posted UNSCOPED, deliberately. A ``tell process "Mail"`` key event did not
+    -- release the loop in live testing; an unscoped one did, because the nested
+    -- loop drains the frontmost application's event queue. Callers reach here
+    -- only while the per-chunk guard has just proven Mail is frontmost.
+    --
+    -- Verified inert when no panel is up: on a Mail compose window with no
+    -- suggestion showing, Escape left the window count unchanged and the
+    -- outgoing message reachable.
+    --
+    -- Deliberately UNGUARDED, and the earlier revision that wrapped this in a
+    -- bare ``try`` was wrong. Two reasons:
+    --
+    -- 1. ``keystroke chunkText`` in the caller's loop is itself unguarded, so a
+    --    System Events failure is already fatal one line above this. The same
+    --    failure has one cause, and it should not report differently depending
+    --    on which of the two calls hit it.
+    -- 2. Swallowing is worst exactly when it matters. If no panel is up, a
+    --    thrown Escape cost nothing. If a panel IS up, the very next statement
+    --    is chunkFocusBlockedName's ``tell application "Mail"`` -- the call that
+    --    blocks for 10+ minutes and dies as a context-free SIGKILL. So a
+    --    swallowed throw does not buy a retry on the next chunk; there is no
+    --    next chunk. It converts a diagnosable failure into the exact wedge
+    --    this handler exists to prevent, with no trace of why.
+    tell application "System Events" to key code 53
+end dismissTextSuggestionPanel
 
 on replyEditorFocusHolds(editorReference)
     -- One AXFocused read on an already-resolved element, instead of another
@@ -255,6 +302,12 @@ on typeReplyBodyChunks(bodyText, expectedTitle, derivedTitle, expectedWindowId, 
         end tell
         set chunkStart to chunkEnd + 1
         if chunkStart is less than or equal to bodyLength then delay {inter_chunk_delay}
+        -- After the pause, not before it: the correction panel opens on a delay
+        -- after the keystrokes settle, so dismissing first would race it. This
+        -- placement is what keeps every ``tell application "Mail"`` in the next
+        -- iteration's guard -- and in the caller after the loop -- from landing
+        -- while a modal panel owns the event loop.
+        my dismissTextSuggestionPanel()
     end repeat
     return "typed"
 end typeReplyBodyChunks

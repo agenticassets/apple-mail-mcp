@@ -525,8 +525,9 @@ search_emails(sender_exact="boss@company.com", read_status="unread")
 # Flagged (action items)
 search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # View flags in results
 
-# Old (low priority)
-search_emails(date_to="2025-01-01")
+# Old (low priority) — always pair date_to with date_from; a bare date_to
+# keeps the default 48h recent_days window and returns an empty result
+search_emails(date_from="2024-10-01", date_to="2025-01-01")
 ```
 
 **Benefit**: No manual filing needed; dynamic lists

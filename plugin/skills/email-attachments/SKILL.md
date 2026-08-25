@@ -48,7 +48,7 @@ list_email_attachments(message_ids=[12345], max_results=10)
 
 See [`large-inbox-rules.md`](references/large-inbox-rules.md) for the canonical pre-flight.
 
-`list_email_attachments` and `save_email_attachment` require exact `message_ids`; use bounded `search_emails(..., has_attachments=True)` first when ids are unknown. JSON attachment listing returns each row's `message_id`, `attachment_index`, filename, and size. Treat `message_id + attachment_index` as the exact selector for saving.
+`list_email_attachments` and `save_email_attachment` require exact `message_ids`; use bounded `search_emails(..., has_attachments=True)` first when ids are unknown. JSON attachment listing returns each row's `message_id`, `attachment_index`, filename, and size. Treat `message_id + attachment_index` as the exact selector for saving. **`attachment_index` is 1-based**: the first attachment is `1`, and `save_email_attachment(attachment_index=0)` is refused with `Error: attachment_index must be a positive 1-based integer`.
 
 If duplicate or similar filenames exist, choose the row from `list_email_attachments(..., output_format="json")` and save with `attachment_index`.
 

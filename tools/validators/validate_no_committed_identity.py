@@ -258,7 +258,7 @@ KNOWN_IDENTITY_HITS: dict[str, int] = {
     "tasks/archive/2026-05/robustness-completion-audit-2026-05-22.md": 7,
     "tasks/archive/2026-05/robustness-next-steps-2026-05-22.md": 3,
     "tasks/archive/2026-05/whose-elimination-2026-05-22/02-mcp-architecture-research.md": 4,
-    "tasks/archive/2026-06/issues/reply-body-insertion-failure-2026-06-18.md": 3,
+    "tasks/archive/2026-06/issues/reply-body-insertion-failure-2026-06-18.md": 0,
     "tasks/archive/2026-06/shipped/codex-claude-plugin-setup-2026-06-07/progress-log.md": 1,
     "tasks/archive/2026-06/shipped/codex-mcp-tool-registration-incident-2026-06-08/issue-summary.md": 2,
     "tasks/archive/2026-06/shipped/codex-mcp-tool-registration-incident-2026-06-08/native-reply-and-draft-lifecycle-issue.md": 1,

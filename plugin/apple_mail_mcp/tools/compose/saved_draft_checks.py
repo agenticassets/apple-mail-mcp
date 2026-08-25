@@ -152,37 +152,67 @@ def _verify_saved_reply_draft(
     end lowercaseChar
 
     on foldFirstChar(theString)
-        -- ASCII-lowercases the first character of theString and leaves the
-        -- rest untouched. Guarded for empty and single-character input so
-        -- "text 2 thru -1 of" never runs off the end of a short string.
+        -- ASCII-lowercases the first NON-WHITESPACE character of theString and
+        -- leaves the rest untouched. Leading whitespace is skipped, not folded:
+        -- flattenForCompare folds before it strips, so in unstripped text a
+        -- sentence start is "." + space + letter and a paragraph start is one or
+        -- more line breaks (plus any indent) + letter. Folding character 1
+        -- blindly would fold the space -- a no-op -- and leave the capital.
+        --
+        -- Returns theString unchanged when the fold would not alter it (the
+        -- common case), avoiding a reallocation per part. That guard needs
+        -- "considering case": AppleScript string equality is case-insensitive by
+        -- default, so "a" is "A" would swallow every fold it exists to skip.
         set stringLength to count of characters of theString
         if stringLength is 0 then return theString
-        if stringLength is 1 then return my lowercaseChar(theString)
-        return (my lowercaseChar(character 1 of theString)) & (text 2 thru -1 of theString)
+        set scanIndex to 1
+        repeat while scanIndex <= stringLength
+            set scanChar to character scanIndex of theString
+            if scanChar is not in {{space, tab, return, linefeed, (character id 160)}} then exit repeat
+            set scanIndex to scanIndex + 1
+        end repeat
+        if scanIndex > stringLength then return theString
+        set sourceChar to character scanIndex of theString
+        set foldedChar to my lowercaseChar(sourceChar)
+        considering case
+            if foldedChar is sourceChar then return theString
+        end considering
+        set foldedText to foldedChar
+        if scanIndex > 1 then set foldedText to (text 1 thru (scanIndex - 1) of theString) & foldedText
+        if scanIndex < stringLength then set foldedText to foldedText & (text (scanIndex + 1) thru -1 of theString)
+        return foldedText
     end foldFirstChar
 
     on foldSentenceStarts(theText)
         -- Neutralizes macOS "Capitalize words automatically" at sentence starts
-        -- (text start and immediately after ".", "!", "?") on BOTH compare sides,
-        -- so autocapitalize cannot cause a false mismatch. An ALL-CAPS draft
-        -- (Bug 3) still fails: this only folds the first letter of each
-        -- sentence, not every letter, so the rest of an ALL-CAPS sentence stays
-        -- mismatched against the source's normal case.
+        -- (text start, immediately after ".", "!", "?", and immediately after a
+        -- line break) on BOTH compare sides, so autocapitalize cannot cause a
+        -- false mismatch. An ALL-CAPS draft (Bug 3) still fails: this only folds
+        -- the first letter of each sentence, not every letter, so the rest of an
+        -- ALL-CAPS sentence stays mismatched against the source's normal case.
         --
-        -- O(number of sentence delimiters), not O(characters): the old
-        -- per-character loop called a handler and reallocated the result
-        -- string on every single character, which is O(n^2) on
-        -- AppleScript's copy-on-append strings. Real Exchange drafts carry
-        -- long quoted thread histories (tens of KB), so that walk could burn
-        -- the whole verifier timeout on one candidate draft, surfacing a real
-        -- body mismatch (AGENTIC-1214) as a timeout instead. This version
-        -- text-item-delimiter-splits on each of ".", "!", "?" in turn and only
-        -- rewrites the first character of the (few) items that follow a
-        -- delimiter, so cost tracks sentence count, not text length.
+        -- The line-break delimiters are why flattenForCompare folds before it
+        -- strips whitespace. macOS capitalizes the first letter of a new
+        -- paragraph, not only of a new sentence, so a paragraph following a line
+        -- that ended in anything but terminal punctuation -- a greeting ending
+        -- in a comma, a colon introducing a list, a line ending in a name or a
+        -- URL -- carried a capital in the draft the source string did not have,
+        -- and one such character failed the whole case-sensitive compare as
+        -- REPLY_BODY_MISMATCH.
+        --
+        -- O(number of delimiters), not O(characters): the old per-character
+        -- loop called a handler and reallocated the result string on every
+        -- single character, which is O(n^2) on AppleScript's copy-on-append
+        -- strings. Real Exchange drafts carry long quoted thread histories
+        -- (tens of KB), so that walk could burn the whole verifier timeout on
+        -- one candidate draft, surfacing a real body mismatch (AGENTIC-1214) as
+        -- a timeout instead. This version text-item-delimiter-splits on each
+        -- delimiter in turn and only rewrites the first character of the (few)
+        -- items that follow one, so cost tracks delimiter count, not length.
         if theText is "" then return theText
         set resultText to my foldFirstChar(theText)
         set previousDelimiters to AppleScript's text item delimiters
-        repeat with delimiterChar in {{".", "!", "?"}}
+        repeat with delimiterChar in {{".", "!", "?", return, linefeed}}
             set AppleScript's text item delimiters to (contents of delimiterChar)
             set theParts to text items of resultText
             set partCount to count of theParts
@@ -198,18 +228,29 @@ def _verify_saved_reply_draft(
     end foldSentenceStarts
 
     on flattenForCompare(theText)
-        -- Whitespace-flattens (Mail's compose window soft-wraps long lines into
-        -- line breaks that the source text does not have), folds Mail's
-        -- Substitutions punctuation (smart quotes/dashes/ellipsis), collapses
-        -- hyphen runs so a source "--" matches Mail's single em-dash
-        -- substitution, and neutralizes sentence-start capitalization. Case is
-        -- preserved everywhere else, so an ALL-CAPS draft still fails the
+        -- Folds Mail's Substitutions punctuation (smart quotes/dashes/ellipsis),
+        -- neutralizes sentence- and paragraph-start capitalization,
+        -- whitespace-flattens (Mail's compose window soft-wraps long lines into
+        -- line breaks that the source text does not have), and collapses hyphen
+        -- runs so a source "--" matches Mail's single em-dash substitution. Case
+        -- is preserved everywhere else, so an ALL-CAPS draft still fails the
         -- case-sensitive compare in replyBodyAboveQuoteStatus.
+        --
+        -- All four step orders are load-bearing:
+        --   1. Punctuation first, so a smart ellipsis becomes "..." and its
+        --      periods delimit sentences on the substituted side too.
+        --   2. Sentence/paragraph starts second, while the line breaks and
+        --      spaces that mark them still exist. Folding after the strip --
+        --      which this handler used to do -- left every paragraph start
+        --      unfolded, the strip having erased the evidence of where the
+        --      paragraphs began.
+        --   3. Whitespace strip third, rejoining Mail's soft wraps (which can
+        --      fall mid-word) so the body is one contiguous span again.
+        --   4. Hyphen-run collapse last, after the strip, so a "--" whose two
+        --      hyphens are split by a wrap or a space still collapses to the
+        --      single "-" that Mail's em-dash substitution yields.
         if theText is "" then return theText
         set t to theText as string
-        repeat with stripChar in {{return, linefeed, tab, space, (character id 160)}}
-            set t to my foldPair(t, (contents of stripChar), "")
-        end repeat
         set t to my foldPair(t, (character id 8216), "'")
         set t to my foldPair(t, (character id 8217), "'")
         set t to my foldPair(t, (character id 8220), "\\"")
@@ -217,11 +258,14 @@ def _verify_saved_reply_draft(
         set t to my foldPair(t, (character id 8211), "-")
         set t to my foldPair(t, (character id 8212), "-")
         set t to my foldPair(t, (character id 8230), "...")
+        set t to my foldSentenceStarts(t)
+        repeat with stripChar in {{return, linefeed, tab, space, (character id 160)}}
+            set t to my foldPair(t, (contents of stripChar), "")
+        end repeat
         repeat 20 times
             if t does not contain "--" then exit repeat
             set t to my foldPair(t, "--", "-")
         end repeat
-        set t to my foldSentenceStarts(t)
         return t
     end flattenForCompare
 

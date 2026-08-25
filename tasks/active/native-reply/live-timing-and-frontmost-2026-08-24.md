@@ -118,6 +118,18 @@ prefer three points to two — two points cannot show you that they disagree.
 
 ## 4. `TYPING_CHUNK_SIZE`: 200 and 250 are not safe — measured, not argued
 
+> **⚠️ SUPERSEDED 2026-08-25 — read
+> [`session-degradation-test-plan-2026-08-25.md`](session-degradation-test-plan-2026-08-25.md) instead.**
+>
+> The passes recorded in this section were verified against drafts left by *previous runs*, not by the
+> run being measured; every result row carried `exact_id_verified: false`. **The "cliff between 160 and
+> 200" claimed below is withdrawn**, and the "Decision: shipped at 160" subsection at the end of this
+> section is void — the shipped value is **120**.
+>
+> What survives: the **200/250 failures are real** (contamination can only fake passes, never failures),
+> and 80 and 120 have clean, uniquely-attributed passes. Everything else here should be read as a record
+> of what was believed on 2026-08-24, not as evidence.
+
 An earlier revision of this section recommended keeping 80 on a *theoretical* margin argument
 against a documented 320-480 character truncation floor. That reasoning was never tested, and the
 number it leaned on turned out not to be the binding constraint. The recommendation survives; the

@@ -36,7 +36,6 @@ from apple_mail_mcp.tools.compose.reply_identity import native_reply_draft_ident
 from apple_mail_mcp.tools.compose.reply_runner import (
     _delete_reply_artifact,
     _native_reply_abort_response,
-    _native_reply_effective_timeout,
     _unrecognized_reply_output_response,
 )
 from apple_mail_mcp.tools.compose.reply_script_helpers import (
@@ -48,6 +47,7 @@ from apple_mail_mcp.tools.compose.reply_scripts import (
     _build_reply_native_window_applescript,
     _build_reply_objectmodel_applescript,
 )
+from apple_mail_mcp.tools.compose.reply_typing_budget import _native_reply_effective_timeout
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.verification import (
     _extract_output_field,
@@ -126,12 +126,20 @@ def reply_to_email(
             exact-id only and does not broaden into a mailbox scan.
         recent_days: Schema-compat parameter for deprecated subject_keyword path
             (default: 2.0 / 48h). Ignored when ``message_id`` is set.
-        timeout: Optional per-AppleScript timeout in seconds. When omitted, the native
-            path (``native_format=True``) scales the timeout with the projected
-            chunked-typing time for ``reply_body``, floored at 120s; a body long
-            enough to exceed the documented typing budget is refused up front with
+        timeout: Optional per-AppleScript timeout in seconds. On the native path
+            (``native_format=True``) the timeout is projected from ``reply_body``:
+            chunked-typing time plus the editor-drain poll, plus fixed overhead and
+            slack, floored at 120s. A body long enough to exceed the documented
+            typing budget is refused up front with
             ``REPLY_BODY_TYPING_BUDGET_EXCEEDED`` instead of risking a mid-typing
-            timeout. Alias validation uses up to 30s.
+            timeout, and that refusal applies whether or not ``timeout`` was passed.
+            An explicit ``timeout`` is **not used as-is on the native path**: it is
+            floored at that projected value, so it can raise the budget but never
+            lower it. The AppleScript sizes its drain budget from the body length
+            on its own and cannot see what the caller granted, so a smaller
+            ``timeout`` would fire mid-drain and strand a compose window with the
+            body typed and unsaved -- which a retry would then type into a second
+            window. Alias validation uses up to 30s.
         include_signature: Whether to apply the configured/default Mail signature (default: True).
         signature_name: Optional Mail signature name; falls back to DEFAULT_MAIL_SIGNATURE when omitted.
         output_format: "text" (default) preserves the existing success output.

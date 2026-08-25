@@ -93,7 +93,6 @@ from apple_mail_mcp.tools.compose.reply import reply_to_email
 from apple_mail_mcp.tools.compose.reply_runner import (
     _delete_reply_artifact,
     _native_reply_abort_response,
-    _native_reply_effective_timeout,
     _unrecognized_reply_output_response,
 )
 from apple_mail_mcp.tools.compose.reply_script_helpers import (
@@ -109,6 +108,7 @@ from apple_mail_mcp.tools.compose.reply_scripts import (
     _native_reply_post_action,
 )
 from apple_mail_mcp.tools.compose.reply_subject_scripts import native_reply_subject_helpers_applescript
+from apple_mail_mcp.tools.compose.reply_typing_budget import _native_reply_effective_timeout
 from apple_mail_mcp.tools.compose.rich_draft import create_rich_email_draft
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_forward_draft, _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.send import _send_html_email, compose_email

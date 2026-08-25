@@ -1,4 +1,4 @@
-"""Native-reply abort dispatch, typing-timeout, and stray-artifact-delete helpers.
+"""Native-reply abort dispatch and stray-artifact-delete helpers.
 
 Leaf module split out of ``reply.py`` (AGENTIC-1214) so the retry loop there
 does not have to carry these self-contained pieces and push the module over
@@ -9,6 +9,11 @@ sentinels (``REPLY_ACCESSIBILITY_UNAVAILABLE``, ``SENDER_OVERRIDE_FAILED``,
 ``GUARD_ABORT*``, ``TYPING_INTERRUPTED``) are mapped here, since ``reply.py``
 calls the same dispatcher for both the first compose attempt and a retype
 attempt.
+
+Everything here reads what a compose run came BACK with. The other half of the
+old module -- projecting how long that run may take and refusing bodies past the
+cap, all decided before any AppleScript is built -- now lives in
+``reply_typing_budget.py``.
 """
 
 from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
@@ -17,9 +22,6 @@ from apple_mail_mcp.tools import compose
 from apple_mail_mcp.tools.compose.constants import (
     QUOTE_PROOF_UNAVAILABLE,
     REPLY_ACCESSIBILITY_UNAVAILABLE,
-    TYPING_CHUNK_SIZE,
-    TYPING_INTER_CHUNK_DELAY,
-    TYPING_PER_CHUNK_OVERHEAD_SECONDS,
 )
 from apple_mail_mcp.tools.compose.reply_draft_resolver_scripts import (
     _native_reply_draft_resolver_handlers_applescript,
@@ -28,82 +30,6 @@ from apple_mail_mcp.tools.compose.reply_identity import NativeReplyDraftIdentity
 from apple_mail_mcp.tools.compose.reply_window_identity_scripts import NATIVE_REPLY_SENDER_OVERRIDE_ABORT
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.verification import _extract_output_field
-
-# Fixed overhead the native compose script spends outside chunk-typing delays:
-# claiming the front, the up-to-4 focus-guard attempts, the initial
-# `reply ... with opening window` render, the compose-window adoption scan, the
-# accessibility walk that resolves the body editor, and the post-type
-# save/close settle plus Drafts identity read. Slack is extra cushion for host
-# variance. Both exist so a timeout scaled only from chunk-typing time cannot
-# come in under budget and let AppleScriptTimeout fire mid-typing, stranding a
-# partially typed compose window that a retry could then type into on top of.
-#
-# Measured at 34.2s on Darwin 25.5 (2026-08-24), the intercept of four
-# successful live replies at 1, 1, 21, and 39 chunks (R2 0.98). The former
-# value of 20 understated it by 14s. That was never fatal -- the slack below
-# absorbed the gap, and the projection stayed ahead of real duration at every
-# body length -- but a constant documented as "fixed overhead" should be the
-# fixed overhead, not a number the slack quietly rescues. Raising it to 35
-# gives each constant its stated meaning and leaves the slack doing the job it
-# is named for: host variance.
-#
-# Only ~4s of the 34.2s is literal `delay` statements; the rest is Mail,
-# Accessibility, and Apple Event work, so it does not shrink by tuning sleeps.
-_NATIVE_TYPING_FIXED_OVERHEAD_SECONDS = 35
-_NATIVE_TYPING_SLACK_SECONDS = 30
-# Bodies whose projected chunk-typing time would exceed this are refused with
-# a structured error instead of silently under- or wildly over-provisioning
-# the AppleScript timeout. The cap is a projected duration, not a character
-# count: at 1.0s per chunk it admits roughly 38,400 characters, which really
-# does type in about six minutes of held foreground. That is a deliberate
-# policy ceiling on how long the native path may own the screen, not a
-# feasibility limit -- the projection stays ahead of measured duration well
-# past it.
-_NATIVE_TYPING_MAX_PROJECTED_SECONDS = 480
-
-
-def _native_reply_effective_timeout(reply_body: str, timeout: int | None) -> tuple[int | None, str | None]:
-    """Return ``(effective_timeout, error_json)`` for the native typed-reply script.
-
-    An explicit ``timeout`` from the caller is used as-is (returned unchanged,
-    with no error). When ``timeout`` is ``None``, the effective timeout scales
-    with the projected chunk-typing duration (chunk count x (inter-chunk delay
-    + per-chunk focus/keystroke overhead)) plus fixed overhead and slack,
-    floored at the standard 120s. Bodies whose projected typing time exceeds
-    the documented cap are refused with a structured error naming the
-    ``timeout`` parameter rather than handed a timeout that
-    ``AppleScriptTimeout`` could fire mid-typing.
-    """
-    if timeout is not None:
-        return timeout, None
-    body_length = len(reply_body)
-    chunk_count = -(-body_length // TYPING_CHUNK_SIZE) if body_length else 0
-    projected_seconds = chunk_count * (TYPING_INTER_CHUNK_DELAY + TYPING_PER_CHUNK_OVERHEAD_SECONDS)
-    if projected_seconds > _NATIVE_TYPING_MAX_PROJECTED_SECONDS:
-        return None, serialize_tool_error(
-            ToolError(
-                code="REPLY_BODY_TYPING_BUDGET_EXCEEDED",
-                message=(
-                    f"reply_body is {body_length} characters, which projects to "
-                    f"~{int(projected_seconds)}s of focus-guarded chunked typing and exceeds "
-                    f"the {_NATIVE_TYPING_MAX_PROJECTED_SECONDS}s documented cap for the native "
-                    "reply path. No draft was created."
-                ),
-                remediation={
-                    "preferred": (
-                        "Shorten reply_body, or pass an explicit timeout large enough for the "
-                        "full typing pass plus overhead if a long body is genuinely required."
-                    ),
-                    "projected_typing_seconds": int(projected_seconds),
-                    "cap_seconds": _NATIVE_TYPING_MAX_PROJECTED_SECONDS,
-                },
-            )
-        )
-    effective = max(
-        120,
-        int(projected_seconds + _NATIVE_TYPING_FIXED_OVERHEAD_SECONDS + _NATIVE_TYPING_SLACK_SECONDS),
-    )
-    return effective, None
 
 
 def _delete_reply_artifact(
@@ -169,10 +95,10 @@ def _probe_abort_artifact(
 ) -> tuple[str, str | None, str, str]:
     """Return ``(artifact_status, suspected_draft_id, guard_subject, derived_subject)``.
 
-    Runs the same signature-agnostic saved-draft probe used by every native-reply
-    abort path (mid-typing interruption or pre-typing guard failure), so all
-    three abort error responses below report from one consistent verification
-    pass instead of three separately duplicated ones.
+    The signature-agnostic saved-draft probe every native-reply abort path
+    shares (mid-typing interruption, refused sender override, pre-typing guard
+    failure), so all of them report from one consistent verification pass. Its
+    caller runs it exactly once, before dispatching to the individual sentinels.
     """
     guard_reply_subject = _extract_output_field(result, "Subject") or ""
     derived_reply_subject = _extract_output_field(result, "DerivedSubject") or ""
@@ -261,29 +187,61 @@ def _native_reply_abort_response(
                     "was left behind."
                 ),
                 remediation={
+                    # Ordered by likelihood, NOT by certainty. Three conditions
+                    # produce a byte-identical reading here -- a different
+                    # Space, a sleeping or locked display, and a lapsed
+                    # Accessibility grant all report zero windows for every
+                    # application with no error raised -- and Mail's own
+                    # `count of windows` is unaffected by all three, so the
+                    # Detail line the text points at cannot separate them
+                    # (measurement: reply_window_scripts.py). The Space case
+                    # leads because it is the common one on a working Mac; it
+                    # must not be stated as a finding, or a locked-screen
+                    # caller is handed a confident wrong diagnosis.
                     "preferred": (
-                        "Check the display first. A sleeping or locked screen produces exactly this "
-                        "reading -- the accessibility bridge reports zero windows for every "
-                        "application while raising no error -- and waking the display fixes it with "
-                        "no other change. Wake and unlock the Mac, then retry."
+                        "Read the Detail line first: it reports Mail's own window count beside the "
+                        "Accessibility one. If Mail has windows and Accessibility sees none, three "
+                        "conditions produce that exact reading and nothing in this call can tell them "
+                        "apart: Mail parked on another Space, a sleeping or locked display, and an "
+                        "Accessibility grant that is no longer in effect. Try the Space first, because "
+                        "it is the most likely on a working Mac -- any full-screen app puts you on its "
+                        "own Space, and Accessibility enumerates no windows for an application parked "
+                        "on another one. Leave full-screen (or move Mail onto the current Space) and "
+                        "retry; Mail does not need restarting. If that changes nothing, the display "
+                        "and the grant are the other two readings, below."
+                    ),
+                    "if_mail_reports_no_windows_either": (
+                        "Then Mail really has no window to reply from: open a Mail viewer window "
+                        "(File > New Viewer Window) and retry."
+                    ),
+                    "if_display_may_be_asleep": (
+                        "A sleeping or locked screen produces an identical reading -- the accessibility "
+                        "bridge reports zero windows for every application while raising no error, and "
+                        "Mail's own window count is unchanged -- so this cannot be ruled out from the "
+                        "Detail line. Waking and unlocking the display fixes it with no other change."
                     ),
                     "alternative": (
-                        "If the display is awake and unlocked, the Accessibility grant is not in "
-                        "effect for the application running this tool: add or re-arm it in System "
-                        "Settings > Privacy & Security > Accessibility (an existing entry can stop "
-                        "taking effect after an app update; toggling it off and on re-arms it), then "
-                        "quit and reopen that application. Either way this is an environment failure, "
-                        "not a formatting one -- do not switch off native_format. compose_email and "
+                        "If neither the Space nor the display explains it, the Accessibility grant is "
+                        "not in effect for the application running this tool: add or re-arm it in "
+                        "System Settings > Privacy & Security > Accessibility (an existing entry can "
+                        "stop taking effect after an app update; toggling it off and on re-arms it), "
+                        "then quit and reopen that application. All three are environment failures, "
+                        "not formatting ones -- do not switch off native_format. compose_email and "
                         "create_rich_email_draft need no Accessibility and keep working meanwhile."
                     ),
                     "script_output": result,
                 },
             )
         )
+    if not result.startswith(("TYPING_INTERRUPTED", NATIVE_REPLY_SENDER_OVERRIDE_ABORT, "GUARD_ABORT")):
+        return None
+
+    # Every remaining sentinel opened a compose window, so all of them report
+    # the same possible stray Drafts row from one shared probe.
+    artifact_status, suspected, guard_reply_subject, derived_reply_subject = _probe_abort_artifact(
+        result, account=account, reply_body=reply_body, timeout=timeout
+    )
     if result.startswith("TYPING_INTERRUPTED"):
-        artifact_status, suspected, _guard_subject, _derived_subject = _probe_abort_artifact(
-            result, account=account, reply_body=reply_body, timeout=timeout
-        )
         return serialize_tool_error(
             ToolError(
                 code="REPLY_BODY_TYPING_INTERRUPTED",
@@ -312,9 +270,6 @@ def _native_reply_abort_response(
             )
         )
     if result.startswith(NATIVE_REPLY_SENDER_OVERRIDE_ABORT):
-        artifact_status, suspected, _guard_subject, _derived_subject = _probe_abort_artifact(
-            result, account=account, reply_body=reply_body, timeout=timeout
-        )
         return serialize_tool_error(
             ToolError(
                 code="REPLY_SENDER_OVERRIDE_FAILED",
@@ -339,12 +294,6 @@ def _native_reply_abort_response(
                 },
             )
         )
-    if not result.startswith("GUARD_ABORT"):
-        return None
-
-    artifact_status, suspected_artifact_id, guard_reply_subject, derived_reply_subject = _probe_abort_artifact(
-        result, account=account, reply_body=reply_body, timeout=timeout
-    )
     if result.startswith("GUARD_ABORT_FRONTMOST"):
         return serialize_tool_error(
             ToolError(
@@ -367,7 +316,7 @@ def _native_reply_abort_response(
                         "failure, not a permission or formatting one: do not switch off "
                         "native_format, and do not grant more permissions to work around it."
                     ),
-                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                    **_abort_artifact_remediation(artifact_status, suspected, result),
                 },
             )
         )
@@ -391,7 +340,7 @@ def _native_reply_abort_response(
                         "visible: visibility is not the blocker here, and each retry opens another "
                         "compose window."
                     ),
-                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                    **_abort_artifact_remediation(artifact_status, suspected, result),
                 },
             )
         )
@@ -416,7 +365,7 @@ def _native_reply_abort_response(
                     ),
                     "expected_subject": guard_reply_subject or derived_reply_subject,
                     "derived_subject": derived_reply_subject or None,
-                    **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                    **_abort_artifact_remediation(artifact_status, suspected, result),
                 },
             )
         )
@@ -437,7 +386,7 @@ def _native_reply_abort_response(
                     "default) once Mail can take focus. If focus still cannot be acquired, stop and "
                     "report the blocker."
                 ),
-                **_abort_artifact_remediation(artifact_status, suspected_artifact_id, result),
+                **_abort_artifact_remediation(artifact_status, suspected, result),
             },
         )
     )

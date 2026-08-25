@@ -15,7 +15,7 @@ from apple_mail_mcp import server as _server
 from apple_mail_mcp.core import AppleScriptTimeout
 from apple_mail_mcp.tools import compose as compose_tools
 from apple_mail_mcp.tools.compose import constants as compose_constants
-from apple_mail_mcp.tools.compose import reply_runner
+from apple_mail_mcp.tools.compose import reply_runner, reply_typing_budget
 from apple_mail_mcp.tools.compose.reply_identity import NativeReplyDraftIdentity
 
 
@@ -4522,22 +4522,43 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
     """AGENTIC-1214 defect 1: the timeout projection must include per-chunk
     focus-recheck + keystroke overhead, not just the inter-chunk delay."""
 
+    @staticmethod
+    def _body_past_the_cap() -> str:
+        """A body the refusal cap must reject, derived rather than hardcoded.
+
+        Two chunks past the largest the chunk term alone can pay for, so it
+        stays over the cap whatever the per-chunk cost is retuned to. A magic
+        character count would quietly stop testing the refusal the first time
+        a constant moved.
+        """
+        per_chunk_cost = (
+            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
+        )
+        chunks_to_exceed_cap = int(reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost) + 2
+        return "a" * (chunks_to_exceed_cap * compose_constants.TYPING_CHUNK_SIZE)
+
     def test_ten_thousand_char_body_projects_beyond_the_floor(self):
         reply_body = "a" * 10_000
         chunk_count = -(-len(reply_body) // compose_constants.TYPING_CHUNK_SIZE)
         expected_projected_seconds = chunk_count * (
             compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
         )
+        # Typing has two phases and the projection covers both: posting the
+        # keystroke events, then waiting for the WebKit editor to drain them.
+        # On a body this long the drain is the larger term.
+        expected_projected_seconds += (
+            compose_constants.typing_settle_attempts(len(reply_body)) * compose_constants.TYPING_SETTLE_DELAY
+        )
         expected_timeout = max(
             120,
             int(
                 expected_projected_seconds
-                + reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
-                + reply_runner._NATIVE_TYPING_SLACK_SECONDS
+                + reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
+                + reply_typing_budget._NATIVE_TYPING_SLACK_SECONDS
             ),
         )
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(reply_body, None)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, None)
 
         self.assertIsNone(timeout_error)
         self.assertEqual(effective_timeout, expected_timeout)
@@ -4545,16 +4566,10 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
 
     def test_body_above_projected_cap_is_still_refused(self):
         # Above the documented cap, the tool must refuse up front rather than
-        # hand out a timeout that could still be exceeded mid-typing. Derive a
-        # body length that exceeds the cap under the new (larger) per-chunk
-        # cost instead of hardcoding a magic character count.
-        per_chunk_cost = (
-            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
-        )
-        chunks_to_exceed_cap = int(reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost) + 2
-        reply_body = "a" * (chunks_to_exceed_cap * compose_constants.TYPING_CHUNK_SIZE)
+        # hand out a timeout that could still be exceeded mid-typing.
+        reply_body = self._body_past_the_cap()
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(reply_body, None)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, None)
 
         self.assertIsNone(effective_timeout)
         self.assertIsNotNone(timeout_error)
@@ -4562,13 +4577,74 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         self.assertEqual(payload["code"], "REPLY_BODY_TYPING_BUDGET_EXCEEDED")
         self.assertGreater(
             payload["remediation"]["projected_typing_seconds"],
-            reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS,
+            reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS,
         )
 
-    def test_explicit_timeout_is_used_as_is(self):
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout("a" * 10_000, 45)
-        self.assertEqual(effective_timeout, 45)
+    def test_explicit_timeout_below_the_projection_is_floored_at_it(self):
+        """An explicit timeout cannot shrink a drain the script will spend anyway.
+
+        ``timeout`` is a public ``reply_to_email`` parameter, so any agent or CLI
+        caller can set it. The AppleScript sizes its editor-drain budget from
+        ``bodyLength`` on its own and never sees the granted timeout, so a value
+        below the projection makes the two consumers of
+        ``typing_settle_attempts`` disagree by construction: ``AppleScriptTimeout``
+        fires mid-drain, the compose window is left open with the body typed and
+        unsaved, and the caller is told to retry -- which types the same body into
+        a SECOND window.
+        """
+        body = "a" * 10_000
+        projected, _ = reply_typing_budget._native_reply_effective_timeout(body, None)
+        assert projected is not None
+
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(body, 45)
+
         self.assertIsNone(timeout_error)
+        self.assertEqual(effective_timeout, projected)
+        self.assertGreater(effective_timeout, 45)
+
+    def test_explicit_timeout_above_the_projection_still_wins(self):
+        """The floor raises a too-small budget; it does not replace the caller's."""
+        body = "a" * 10_000
+        projected, _ = reply_typing_budget._native_reply_effective_timeout(body, None)
+        assert projected is not None
+        generous = projected + 600
+
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(body, generous)
+
+        self.assertIsNone(timeout_error)
+        self.assertEqual(effective_timeout, generous)
+
+    def test_explicit_timeout_does_not_lift_the_refusal_cap(self):
+        """The floor stays bounded only because the cap applies to this path too.
+
+        Were the cap still skipped whenever ``timeout`` was passed, the floor
+        would scale with an unrefused body all the way past ``run_applescript``'s
+        own 3600s ``INVALID_TIMEOUT`` ceiling.
+        """
+        reply_body = self._body_past_the_cap()
+
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, 3600)
+
+        self.assertIsNone(effective_timeout)
+        self.assertIsNotNone(timeout_error)
+        payload = json.loads(timeout_error)
+        self.assertEqual(payload["code"], "REPLY_BODY_TYPING_BUDGET_EXCEEDED")
+        # And the refusal must not send the caller back into the timeout
+        # parameter, which no longer lifts the cap.
+        self.assertIn("shorten reply_body", payload["remediation"]["preferred"].lower())
+
+    def test_every_admitted_body_is_floored_below_the_applescript_timeout_ceiling(self):
+        """``run_applescript`` refuses a timeout over 3600s with ``INVALID_TIMEOUT``.
+
+        The floor is derived, not passed in, so a caller cannot see it coming; it
+        must never be able to manufacture a value the transport then rejects.
+        """
+        cap_ceiling = (
+            reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS
+            + reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
+            + reply_typing_budget._NATIVE_TYPING_SLACK_SECONDS
+        )
+        self.assertLessEqual(cap_ceiling, 3600)
 
 
 class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
@@ -4581,8 +4657,25 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
 
     Fitted on Darwin 25.5, 2026-08-24 over four **successful** live draft
     replies at 1, 1, 21, and 39 chunks: 0.70s per chunk on a 34.2s fixed
-    overhead, R2 0.98. Only ~4s of the fixed part is literal ``delay``
-    statements; the rest is Mail, Accessibility, and Apple Event work.
+    overhead, R2 0.98.
+
+    Both of those numbers are now known to be inflated, and the class keeps
+    them anyway. They were fitted BEFORE the editor-drain poll existed, when
+    the script went straight from the last keystroke to ``save`` and every run
+    carried an unmeasured amount of undrained-typing time. The later chunk-size
+    sweep in ``constants.py`` (2026-08-25) has complete 2,400-character runs
+    finishing in 21.3-28.9s end to end -- below the 34.2s "fixed overhead"
+    alone, which cannot both be true. Refitting that sweep gives roughly
+    0.48s per chunk on a ~19s intercept. Over-projecting is the safe direction
+    for a timeout, so the older, larger numbers stay as the yardstick.
+
+    THE YARDSTICK MUST GAIN A TERM WHEN THE PROJECTION DOES. A one-phase model
+    (chunks only) stopped describing a run the moment typing became two phases:
+    at the refusal cap the drain budget alone is 100s, and a chunks-only
+    duration would invent ~245s of margin that no longer exists. So
+    ``_measured_duration`` carries the drain explicitly. The claim these tests
+    make -- every body the cap admits is one the granted timeout can outlive --
+    is only checked if the yardstick models the same phases the script runs.
 
     Successful runs only, deliberately. A reply that fails verification also
     burns a 20-attempt fallback poll at 1s per attempt that the success path
@@ -4593,18 +4686,37 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
 
     MEASURED_SECONDS_PER_CHUNK = 0.70
     MEASURED_FIXED_OVERHEAD_SECONDS = 34.2
+    # The 2026-08-25 sweep's own refit of the same intercept, and the fastest
+    # COMPLETE 2,400-character run it recorded. The second number is what
+    # refutes the first constant above: a whole run cannot finish faster than
+    # the fixed overhead it supposedly pays.
+    REFITTED_FIXED_OVERHEAD_SECONDS = 19.1
+    SWEEP_FASTEST_COMPLETE_2400_CHAR_RUN_SECONDS = 21.3
 
     def _measured_duration(self, body_length: int) -> float:
+        """Conservative model of a real run: chunk posting + drain + overhead.
+
+        The drain term is the FULL poll budget, not an expected value. The poll
+        exits early whenever the tail match or the length-delta fires, so this
+        overstates a healthy run -- which is the correct direction for a
+        yardstick a timeout has to clear.
+        """
         chunk_count = -(-body_length // compose_constants.TYPING_CHUNK_SIZE) if body_length else 0
-        return chunk_count * self.MEASURED_SECONDS_PER_CHUNK + self.MEASURED_FIXED_OVERHEAD_SECONDS
+        drain_seconds = compose_constants.typing_settle_attempts(body_length) * compose_constants.TYPING_SETTLE_DELAY
+        return (
+            chunk_count * self.MEASURED_SECONDS_PER_CHUNK + drain_seconds + self.MEASURED_FIXED_OVERHEAD_SECONDS
+        )
 
     def test_granted_timeout_exceeds_measured_duration_at_every_admissible_length(self):
         # Walk the range rather than spot-checking: a projection can be ahead
         # of real duration at short and capped lengths and still cross over in
-        # the middle, and the middle is where ordinary replies live.
-        for body_length in (0, 1, 57, 500, 1599, 3040, 5000, 8000, 20_000, 38_000):
+        # the middle, and the middle is where ordinary replies live. The last
+        # two entries sit above the ~6,259-character point where the drain
+        # budget saturates, which is the region the projection covers by
+        # extrapolation rather than measurement.
+        for body_length in (0, 1, 57, 500, 1599, 3040, 5000, 8000, 20_000, 38_000, 114_000):
             with self.subTest(body_length=body_length):
-                granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+                granted, error = reply_typing_budget._native_reply_effective_timeout("a" * body_length, None)
                 if error is not None:
                     continue  # refused up front, so there is no timeout to outlive
                 assert granted is not None
@@ -4616,13 +4728,35 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
                     "fire mid-typing and strand a partially typed compose window",
                 )
 
-    def test_fixed_overhead_constant_reflects_the_measured_overhead(self):
-        # The slack is cushion for host variance, not a place to hide an
-        # understated overhead. Before 2026-08-24 this constant read 20 against
-        # a measured 34.2 and only the slack kept the projection honest.
-        self.assertGreaterEqual(
-            reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+    def test_fixed_overhead_constant_is_conservative_not_a_frozen_measurement(self):
+        """The constant is a ceiling. It must not become a floor under 34.2s.
+
+        This test used to assert ``>= 34.2``, which turned a refuted measurement
+        into an enforced minimum: the next person to retune the constant would
+        have had to delete a test claiming to encode a measurement in order to
+        lower it. The 34.2s fit came from the pre-drain regime, and the sweep in
+        ``constants.py`` contradicts it directly -- complete 2,400-character runs
+        finished in 21.3s, which is impossible if 34.2s of that is fixed
+        overhead.
+
+        What actually has to hold is conservatism: the constant covers the real
+        (refitted) overhead with room for host variance, and does not run away
+        into a margin so large the timeout stops bounding anything. Over-
+        projection is safe, but the timeout is also how long a wedged compose
+        window holds the Mail lock before anyone hears about it.
+        """
+        self.assertLess(
+            self.SWEEP_FASTEST_COMPLETE_2400_CHAR_RUN_SECONDS,
             self.MEASURED_FIXED_OVERHEAD_SECONDS,
+            "the superseded 34.2s fit is only refuted while a complete run measures faster than it",
+        )
+        self.assertGreaterEqual(
+            reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+            self.REFITTED_FIXED_OVERHEAD_SECONDS,
+        )
+        self.assertLessEqual(
+            reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+            self.REFITTED_FIXED_OVERHEAD_SECONDS * 3,
         )
 
     def test_per_chunk_projection_is_conservative_but_not_absurd(self):
@@ -4638,17 +4772,32 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
     def test_refusal_cap_admits_no_body_it_cannot_finish(self):
         # The cap and the projection have to agree: every body the cap admits
         # must also be one the granted timeout can outlive.
-        per_chunk_cost = (
-            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
-        )
-        largest_admissible_chunks = int(reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost)
-        body_length = largest_admissible_chunks * compose_constants.TYPING_CHUNK_SIZE
+        #
+        # The boundary is found by ASKING the real function rather than
+        # re-deriving the formula here. The projection has two terms now (chunk
+        # posting plus editor drain) and the drain term saturates, so a boundary
+        # solved from the chunk term alone lands on the refused side -- which is
+        # exactly how this test failed when the drain term was added. A search
+        # cannot go stale the next time the formula gains a term.
+        low, high = 1, 1_000_000
+        while low < high:
+            mid = (low + high + 1) // 2
+            _, mid_error = reply_typing_budget._native_reply_effective_timeout("a" * mid, None)
+            if mid_error is None:
+                low = mid
+            else:
+                high = mid - 1
+        body_length = low
 
-        granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+        granted, error = reply_typing_budget._native_reply_effective_timeout("a" * body_length, None)
 
         self.assertIsNone(error, "body at the cap boundary should be admitted, not refused")
         assert granted is not None
         self.assertGreater(granted, self._measured_duration(body_length))
+
+        # And one character past it is refused, so the boundary is real.
+        _, past_error = reply_typing_budget._native_reply_effective_timeout("a" * (body_length + 1), None)
+        self.assertIsNotNone(past_error, "one character past the boundary should be refused")
 
 
 if __name__ == "__main__":

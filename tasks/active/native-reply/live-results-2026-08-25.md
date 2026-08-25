@@ -77,7 +77,7 @@ waiting is the fix rather than retyping.
 
 **Fix, part two:** the budget is computed from `bodyLength`, in AppleScript so a retype pass
 re-scales, and mirrored in Python by `constants.typing_settle_attempts()` so
-`reply_runner._native_reply_effective_timeout` can project a timeout that contains the drain. If
+`reply_typing_budget._native_reply_effective_timeout` can project a timeout that contains the drain. If
 those two disagreed, `AppleScriptTimeout` would fire mid-drain and strand a partially typed compose
 window — strictly worse than the truncation being fixed.
 

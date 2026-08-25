@@ -15,7 +15,7 @@ from apple_mail_mcp import server as _server
 from apple_mail_mcp.core import AppleScriptTimeout
 from apple_mail_mcp.tools import compose as compose_tools
 from apple_mail_mcp.tools.compose import constants as compose_constants
-from apple_mail_mcp.tools.compose import reply_runner
+from apple_mail_mcp.tools.compose import reply_runner, reply_typing_budget
 from apple_mail_mcp.tools.compose.reply_identity import NativeReplyDraftIdentity
 
 
@@ -4522,6 +4522,21 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
     """AGENTIC-1214 defect 1: the timeout projection must include per-chunk
     focus-recheck + keystroke overhead, not just the inter-chunk delay."""
 
+    @staticmethod
+    def _body_past_the_cap() -> str:
+        """A body the refusal cap must reject, derived rather than hardcoded.
+
+        Two chunks past the largest the chunk term alone can pay for, so it
+        stays over the cap whatever the per-chunk cost is retuned to. A magic
+        character count would quietly stop testing the refusal the first time
+        a constant moved.
+        """
+        per_chunk_cost = (
+            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
+        )
+        chunks_to_exceed_cap = int(reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost) + 2
+        return "a" * (chunks_to_exceed_cap * compose_constants.TYPING_CHUNK_SIZE)
+
     def test_ten_thousand_char_body_projects_beyond_the_floor(self):
         reply_body = "a" * 10_000
         chunk_count = -(-len(reply_body) // compose_constants.TYPING_CHUNK_SIZE)
@@ -4538,12 +4553,12 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
             120,
             int(
                 expected_projected_seconds
-                + reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
-                + reply_runner._NATIVE_TYPING_SLACK_SECONDS
+                + reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
+                + reply_typing_budget._NATIVE_TYPING_SLACK_SECONDS
             ),
         )
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(reply_body, None)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, None)
 
         self.assertIsNone(timeout_error)
         self.assertEqual(effective_timeout, expected_timeout)
@@ -4551,16 +4566,10 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
 
     def test_body_above_projected_cap_is_still_refused(self):
         # Above the documented cap, the tool must refuse up front rather than
-        # hand out a timeout that could still be exceeded mid-typing. Derive a
-        # body length that exceeds the cap under the new (larger) per-chunk
-        # cost instead of hardcoding a magic character count.
-        per_chunk_cost = (
-            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
-        )
-        chunks_to_exceed_cap = int(reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost) + 2
-        reply_body = "a" * (chunks_to_exceed_cap * compose_constants.TYPING_CHUNK_SIZE)
+        # hand out a timeout that could still be exceeded mid-typing.
+        reply_body = self._body_past_the_cap()
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(reply_body, None)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, None)
 
         self.assertIsNone(effective_timeout)
         self.assertIsNotNone(timeout_error)
@@ -4568,7 +4577,7 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         self.assertEqual(payload["code"], "REPLY_BODY_TYPING_BUDGET_EXCEEDED")
         self.assertGreater(
             payload["remediation"]["projected_typing_seconds"],
-            reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS,
+            reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS,
         )
 
     def test_explicit_timeout_below_the_projection_is_floored_at_it(self):
@@ -4584,10 +4593,10 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         a SECOND window.
         """
         body = "a" * 10_000
-        projected, _ = reply_runner._native_reply_effective_timeout(body, None)
+        projected, _ = reply_typing_budget._native_reply_effective_timeout(body, None)
         assert projected is not None
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(body, 45)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(body, 45)
 
         self.assertIsNone(timeout_error)
         self.assertEqual(effective_timeout, projected)
@@ -4596,11 +4605,11 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
     def test_explicit_timeout_above_the_projection_still_wins(self):
         """The floor raises a too-small budget; it does not replace the caller's."""
         body = "a" * 10_000
-        projected, _ = reply_runner._native_reply_effective_timeout(body, None)
+        projected, _ = reply_typing_budget._native_reply_effective_timeout(body, None)
         assert projected is not None
         generous = projected + 600
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(body, generous)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(body, generous)
 
         self.assertIsNone(timeout_error)
         self.assertEqual(effective_timeout, generous)
@@ -4612,13 +4621,9 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         would scale with an unrefused body all the way past ``run_applescript``'s
         own 3600s ``INVALID_TIMEOUT`` ceiling.
         """
-        per_chunk_cost = (
-            compose_constants.TYPING_INTER_CHUNK_DELAY + compose_constants.TYPING_PER_CHUNK_OVERHEAD_SECONDS
-        )
-        chunks_to_exceed_cap = int(reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS // per_chunk_cost) + 2
-        reply_body = "a" * (chunks_to_exceed_cap * compose_constants.TYPING_CHUNK_SIZE)
+        reply_body = self._body_past_the_cap()
 
-        effective_timeout, timeout_error = reply_runner._native_reply_effective_timeout(reply_body, 3600)
+        effective_timeout, timeout_error = reply_typing_budget._native_reply_effective_timeout(reply_body, 3600)
 
         self.assertIsNone(effective_timeout)
         self.assertIsNotNone(timeout_error)
@@ -4635,9 +4640,9 @@ class NativeReplyEffectiveTimeoutTests(unittest.TestCase):
         must never be able to manufacture a value the transport then rejects.
         """
         cap_ceiling = (
-            reply_runner._NATIVE_TYPING_MAX_PROJECTED_SECONDS
-            + reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
-            + reply_runner._NATIVE_TYPING_SLACK_SECONDS
+            reply_typing_budget._NATIVE_TYPING_MAX_PROJECTED_SECONDS
+            + reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS
+            + reply_typing_budget._NATIVE_TYPING_SLACK_SECONDS
         )
         self.assertLessEqual(cap_ceiling, 3600)
 
@@ -4711,7 +4716,7 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
         # extrapolation rather than measurement.
         for body_length in (0, 1, 57, 500, 1599, 3040, 5000, 8000, 20_000, 38_000, 114_000):
             with self.subTest(body_length=body_length):
-                granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+                granted, error = reply_typing_budget._native_reply_effective_timeout("a" * body_length, None)
                 if error is not None:
                     continue  # refused up front, so there is no timeout to outlive
                 assert granted is not None
@@ -4746,11 +4751,11 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
             "the superseded 34.2s fit is only refuted while a complete run measures faster than it",
         )
         self.assertGreaterEqual(
-            reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+            reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
             self.REFITTED_FIXED_OVERHEAD_SECONDS,
         )
         self.assertLessEqual(
-            reply_runner._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
+            reply_typing_budget._NATIVE_TYPING_FIXED_OVERHEAD_SECONDS,
             self.REFITTED_FIXED_OVERHEAD_SECONDS * 3,
         )
 
@@ -4777,21 +4782,21 @@ class NativeReplyTimeoutCalibrationTests(unittest.TestCase):
         low, high = 1, 1_000_000
         while low < high:
             mid = (low + high + 1) // 2
-            _, mid_error = reply_runner._native_reply_effective_timeout("a" * mid, None)
+            _, mid_error = reply_typing_budget._native_reply_effective_timeout("a" * mid, None)
             if mid_error is None:
                 low = mid
             else:
                 high = mid - 1
         body_length = low
 
-        granted, error = reply_runner._native_reply_effective_timeout("a" * body_length, None)
+        granted, error = reply_typing_budget._native_reply_effective_timeout("a" * body_length, None)
 
         self.assertIsNone(error, "body at the cap boundary should be admitted, not refused")
         assert granted is not None
         self.assertGreater(granted, self._measured_duration(body_length))
 
         # And one character past it is refused, so the boundary is real.
-        _, past_error = reply_runner._native_reply_effective_timeout("a" * (body_length + 1), None)
+        _, past_error = reply_typing_budget._native_reply_effective_timeout("a" * (body_length + 1), None)
         self.assertIsNotNone(past_error, "one character past the boundary should be refused")
 
 

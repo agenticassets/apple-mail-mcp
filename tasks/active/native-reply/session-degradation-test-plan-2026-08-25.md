@@ -176,8 +176,9 @@ which accumulator is driving the symptom (§ 5.3).
 
 ### 3.4 The timeout projection does not model any of this
 
-`_native_reply_effective_timeout` ([`reply_runner.py:65-106`](../../../plugin/apple_mail_mcp/tools/compose/reply_runner.py))
-computes `chunk_count × 1.0 s` plus a flat 35 s and 30 s slack. Everything in § 3.2 and § 3.3 lives
+`_native_reply_effective_timeout` ([`reply_typing_budget.py`](../../../plugin/apple_mail_mcp/tools/compose/reply_typing_budget.py))
+computes `chunk_count × 1.0 s`, plus the editor-drain budget `typing_settle_attempts(bodyLength) × 0.25 s`,
+plus a flat 35 s and 30 s slack. Both scaled terms grow with the body; everything in § 3.2 and § 3.3 lives
 inside that flat 35 s, which was fitted as the intercept of four successful runs on one machine at one
 moment. As drafts and windows accumulate, real fixed overhead grows while the budget does not — until
 the SIGKILL fires, which leaks another window, which raises the overhead further.

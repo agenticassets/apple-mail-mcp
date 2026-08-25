@@ -230,7 +230,7 @@ TYPING_INTER_CHUNK_DELAY: Final[float] = 0.35
 # Additional per-chunk cost the inter-chunk delay alone does not capture: the
 # per-chunk focus re-check (two System Events "tell" blocks, each wrapped in a
 # try) plus the keystroke call itself. The timeout projection in
-# reply_runner.py multiplies this by chunk_count alongside
+# reply_typing_budget.py multiplies this by chunk_count alongside
 # TYPING_INTER_CHUNK_DELAY so a long body cannot project under its real typing
 # time and get killed by AppleScriptTimeout mid-typing.
 #
@@ -264,7 +264,7 @@ def typing_settle_attempts(body_length: int) -> int:
 
     Shared deliberately by two callers that must agree: the AppleScript builder
     in ``typing_scripts.py``, which spends the budget, and
-    ``reply_runner._native_reply_effective_timeout``, which must project a
+    ``reply_typing_budget._native_reply_effective_timeout``, which must project a
     timeout large enough to contain it. If those two ever disagree,
     ``AppleScriptTimeout`` fires mid-drain and strands a partially typed compose
     window -- the exact failure the projection exists to prevent.

@@ -29,7 +29,7 @@ from __future__ import annotations
 import unittest
 
 from apple_mail_mcp.tools.compose import constants as compose_constants
-from apple_mail_mcp.tools.compose import reply_runner
+from apple_mail_mcp.tools.compose import reply_typing_budget
 from apple_mail_mcp.tools.compose.typing_scripts import build_chunked_typing_handler
 
 
@@ -42,6 +42,18 @@ def _handler() -> str:
 
 def _code_only(script: str) -> str:
     return "\n".join(line for line in script.splitlines() if not line.strip().startswith("--"))
+
+
+def _poll() -> str:
+    """The emitted ``waitForTypedBodyToSettle`` handler, comment lines stripped."""
+    code = _code_only(_handler())
+    return code[code.index("on waitForTypedBodyToSettle(") :]
+
+
+def _typing_loop() -> str:
+    """The emitted ``typeReplyBodyChunks`` handler, comment lines stripped."""
+    code = _code_only(_handler())
+    return code[code.index("on typeReplyBodyChunks(") : code.index("end typeReplyBodyChunks")]
 
 
 class SettleBudgetScalingTests(unittest.TestCase):
@@ -154,8 +166,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         quote length is not derivable from ``bodyText``. Only the growth from a
         baseline captured before typing is attributable to the keystrokes.
         """
-        code = _code_only(_handler())
-        loop_body = code[code.index("on typeReplyBodyChunks(") : code.index("end typeReplyBodyChunks")]
+        loop_body = _typing_loop()
         pre_count = loop_body.index('set preTypingText to (value of attribute "AXValue"')
         first_keystroke = loop_body.index("keystroke chunkText")
         self.assertLess(pre_count, first_keystroke)
@@ -180,8 +191,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         drained -- which is exactly the truncation the wait exists to prevent.
         -1 is the explicit UNKNOWN, and the delta is guarded on it.
         """
-        code = _code_only(_handler())
-        loop_body = code[code.index("on typeReplyBodyChunks(") : code.index("end typeReplyBodyChunks")]
+        loop_body = _typing_loop()
         self.assertIn("set preTypingLength to -1", loop_body)
         # The sentinel is derived from the failed read, not from a bare default.
         self.assertIn("on error preTypingErrMsg", loop_body)
@@ -190,8 +200,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
             'if preTypingLengthFailure is "" and preTypingText is not missing value then',
             loop_body,
         )
-        poll = code[code.index("on waitForTypedBodyToSettle(") :]
-        self.assertIn("if preTypingLength is greater than or equal to 0 then", poll)
+        self.assertIn("if preTypingLength is greater than or equal to 0 then", _poll())
 
     def test_the_delta_exit_is_gated_on_the_length_having_stopped_growing(self) -> None:
         """A single satisfied delta reading is not sufficient, because of the signature.
@@ -210,8 +219,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         is the "everything has landed" signal; the delta alone only says enough
         characters exist, which the wrong characters can satisfy.
         """
-        poll = _code_only(_handler())
-        poll = poll[poll.index("on waitForTypedBodyToSettle(") :]
+        poll = _poll()
         self.assertIn(
             "if (currentEditorLength - preTypingLength) is greater than or equal to bodyLength "
             'and currentEditorLength is previousEditorLength then return "settled_delta"',
@@ -234,8 +242,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         the tail match is what covers that body; the substitutions that leave
         length alone are what the delta covers.
         """
-        poll = _code_only(_handler())
-        poll = poll[poll.index("on waitForTypedBodyToSettle(") :]
+        poll = _poll()
         self.assertIn(
             "if (currentEditorLength - preTypingLength) is greater than or equal to bodyLength "
             'and currentEditorLength is previousEditorLength then return "settled_delta"',
@@ -247,8 +254,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         """The tail match proves the END of the body is present, which is a
         stronger statement than "growth stopped". Gating it on stability would
         make it pay a poll interval it does not owe."""
-        poll = _code_only(_handler())
-        poll = poll[poll.index("on waitForTypedBodyToSettle(") :]
+        poll = _poll()
         tail_exit = poll[poll.index("editorText contains bodyTail") :].split("\n", 1)[0]
         self.assertNotIn("previousEditorLength", tail_exit)
         self.assertNotIn("currentEditorLength", tail_exit)
@@ -256,8 +262,8 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
     def test_the_poll_is_still_non_fatal(self) -> None:
         """The poll only buys the editor time to be worth verifying.
 
-        Its return value is discarded and an exhausted budget returns false
-        without aborting the typing pass. The case-sensitive verification
+        Its return value is discarded and an exhausted budget returns a plain
+        status string, never an error. The case-sensitive verification
         against the SAVED draft is what decides correctness, and a poll that
         failed a complete body here would fail drafts that are in fact fine.
         """
@@ -266,7 +272,7 @@ class SettleExitsOnLengthDeltaTests(unittest.TestCase):
         self.assertIn("\n    my waitForTypedBodyToSettle(", code)
         self.assertNotIn("set settleResult to my waitForTypedBodyToSettle(", code)
         self.assertNotIn("if (my waitForTypedBodyToSettle(", code)
-        poll = code[code.index("on waitForTypedBodyToSettle(") :]
+        poll = _poll()
         # Budget exhaustion falls out of the loop to a plain status, not an error.
         self.assertNotIn("error ", poll.split("end repeat", 1)[1])
         self.assertIn('end repeat\n    return "budget_exhausted"', poll)
@@ -289,8 +295,7 @@ class TailExitCannotFireAgainstTheQuotedOriginalTests(unittest.TestCase):
 
     def test_the_answer_is_computed_from_the_pre_typing_read_already_taken(self) -> None:
         """No second AX round trip: the length baseline already read the text."""
-        code = _code_only(_handler())
-        loop_body = code[code.index("on typeReplyBodyChunks(") : code.index("end typeReplyBodyChunks")]
+        loop_body = _typing_loop()
         # One AXValue read before typing, and both derived answers come off it.
         self.assertEqual(loop_body.count('attribute "AXValue"'), 1)
         self.assertIn("set tailExitUsable to not (preTypingText contains preTypingTail)", loop_body)
@@ -306,8 +311,7 @@ class TailExitCannotFireAgainstTheQuotedOriginalTests(unittest.TestCase):
         baseline uses, so a probe that threw disables both exits rather than
         granting either a free pass.
         """
-        code = _code_only(_handler())
-        loop_body = code[code.index("on typeReplyBodyChunks(") : code.index("end typeReplyBodyChunks")]
+        loop_body = _typing_loop()
         default = loop_body.index("set tailExitUsable to false")
         guard = loop_body.index('if preTypingLengthFailure is "" and preTypingText is not missing value then')
         raised = loop_body.index("set tailExitUsable to not (preTypingText contains preTypingTail)")
@@ -315,8 +319,7 @@ class TailExitCannotFireAgainstTheQuotedOriginalTests(unittest.TestCase):
         self.assertLess(guard, raised)
 
     def test_the_poll_gates_the_tail_exit_on_that_answer(self) -> None:
-        poll = _code_only(_handler())
-        poll = poll[poll.index("on waitForTypedBodyToSettle(") :]
+        poll = _poll()
         self.assertIn('if tailExitUsable and editorText contains bodyTail then return "settled_tail"', poll)
 
 
@@ -333,18 +336,14 @@ class UnobservedDrainStillWaitsTests(unittest.TestCase):
     UNVERIFIED against live Mail: static assertions on the emitted AppleScript.
     """
 
-    def _poll(self) -> str:
-        code = _code_only(_handler())
-        return code[code.index("on waitForTypedBodyToSettle(") :]
-
     def test_the_budget_is_computed_before_the_unobservable_exits(self) -> None:
-        poll = self._poll()
+        poll = _poll()
         budget = poll.index("set settleBudgetSeconds to settleAttempts *")
         self.assertLess(budget, poll.index("if editorReference is missing value then"))
         self.assertLess(budget, poll.index("repeat with settleAttempt from 1 to settleAttempts"))
 
     def test_a_missing_editor_reference_waits_the_budget_out(self) -> None:
-        poll = self._poll()
+        poll = _poll()
         branch = poll[poll.index("if editorReference is missing value then") :]
         branch = branch[: branch.index("end if")]
         self.assertIn("delay settleBudgetSeconds", branch)
@@ -353,7 +352,7 @@ class UnobservedDrainStillWaitsTests(unittest.TestCase):
     def test_a_first_read_that_throws_waits_the_budget_out(self) -> None:
         """Only the FIRST read. A later throw follows readings that landed, so
         the drain was observed and partly waited out already."""
-        poll = self._poll()
+        poll = _poll()
         branch = poll[poll.index("if settleAttempt is 1 then") :]
         branch = branch[: branch.index("end if")]
         self.assertIn("delay settleBudgetSeconds", branch)
@@ -361,7 +360,7 @@ class UnobservedDrainStillWaitsTests(unittest.TestCase):
 
     def test_budget_exhaustion_does_not_pay_the_budget_twice(self) -> None:
         """That path already waited; a blind top-up would double every timeout."""
-        poll = self._poll()
+        poll = _poll()
         after_loop = poll.split("end repeat", 1)[1]
         self.assertNotIn("delay", after_loop)
 
@@ -618,15 +617,15 @@ class SettleIsInsideTheTimeoutTests(unittest.TestCase):
 
     def test_the_projection_contains_the_drain(self) -> None:
         body = "a" * 5_000
-        granted, error = reply_runner._native_reply_effective_timeout(body, None)
+        granted, error = reply_typing_budget._native_reply_effective_timeout(body, None)
         self.assertIsNone(error)
         assert granted is not None
         drain_seconds = compose_constants.typing_settle_attempts(len(body)) * compose_constants.TYPING_SETTLE_DELAY
         self.assertGreater(granted, drain_seconds)
 
     def test_a_longer_body_is_granted_more_time(self) -> None:
-        short, _ = reply_runner._native_reply_effective_timeout("a" * 2_400, None)
-        long, _ = reply_runner._native_reply_effective_timeout("a" * 20_000, None)
+        short, _ = reply_typing_budget._native_reply_effective_timeout("a" * 2_400, None)
+        long, _ = reply_typing_budget._native_reply_effective_timeout("a" * 20_000, None)
         assert short is not None and long is not None
         self.assertGreater(long, short)
 
@@ -638,16 +637,16 @@ class SettleIsInsideTheTimeoutTests(unittest.TestCase):
         makes the two users of ``typing_settle_attempts`` disagree by
         construction and fires ``AppleScriptTimeout`` mid-drain -- stranding a
         compose window with the body typed and unsaved. See
-        ``reply_runner._native_reply_effective_timeout``; the same contract is
+        ``reply_typing_budget._native_reply_effective_timeout``; the same contract is
         pinned from the caller's side in
         ``test_compose_tools.py::test_explicit_timeout_below_the_projection_is_floored_at_it``.
         """
-        projected, _ = reply_runner._native_reply_effective_timeout("a" * 5_000, None)
+        projected, _ = reply_typing_budget._native_reply_effective_timeout("a" * 5_000, None)
         assert projected is not None
-        floored, error = reply_runner._native_reply_effective_timeout("a" * 5_000, 42)
+        floored, error = reply_typing_budget._native_reply_effective_timeout("a" * 5_000, 42)
         self.assertIsNone(error)
         self.assertEqual(floored, projected)
-        generous, error = reply_runner._native_reply_effective_timeout("a" * 5_000, projected + 300)
+        generous, error = reply_typing_budget._native_reply_effective_timeout("a" * 5_000, projected + 300)
         self.assertIsNone(error)
         self.assertEqual(generous, projected + 300)
 

@@ -78,6 +78,16 @@ def _reply_with_script_output(output: str, **kwargs: object) -> str:
     return result
 
 
+def _sentinel_remediation() -> dict[str, str]:
+    """The sentinel reply's remediation block, every value lowercased.
+
+    Each wording assertion below builds the same envelope from the same
+    sentinel, so the build lives here once.
+    """
+    payload = json.loads(_reply_with_script_output(_SENTINEL_OUTPUT, output_format="json"))
+    return {key: str(value).lower() for key, value in payload["remediation"].items()}
+
+
 class AccessibilityPreflightScriptTests(unittest.TestCase):
     def test_preflight_runs_before_the_reply_command(self) -> None:
         """Order is the entire value: a later check has already leaked a window.
@@ -202,14 +212,13 @@ class AccessibilitySentinelResponseTests(unittest.TestCase):
         which is a separate property -- leading with the most likely cause is
         right, and stating it as fact is not.
         """
-        payload = json.loads(_reply_with_script_output(_SENTINEL_OUTPUT, output_format="json"))
-        preferred = str(payload["remediation"]["preferred"]).lower()
-        remediation = " ".join(str(value) for value in payload["remediation"].values()).lower()
+        remediation = _sentinel_remediation()
+        whole_block = " ".join(remediation.values())
 
-        self.assertIn("space", preferred)
-        self.assertIn("display", remediation)
-        self.assertIn("accessibility", remediation)
-        self.assertNotIn("retry with mail visible", remediation)
+        self.assertIn("space", remediation["preferred"])
+        self.assertIn("display", whole_block)
+        self.assertIn("accessibility", whole_block)
+        self.assertNotIn("retry with mail visible", whole_block)
 
     def test_preferred_does_not_assert_a_cause_it_cannot_prove(self) -> None:
         """The reading the text points at cannot separate the three causes.
@@ -227,8 +236,7 @@ class AccessibilitySentinelResponseTests(unittest.TestCase):
         permissions problem". That wording was a confident wrong diagnosis for
         every locked-screen caller.
         """
-        payload = json.loads(_reply_with_script_output(_SENTINEL_OUTPUT, output_format="json"))
-        preferred = str(payload["remediation"]["preferred"]).lower()
+        preferred = _sentinel_remediation()["preferred"]
 
         self.assertNotIn("not a permissions problem", preferred)
         # Hedged, not asserted.
@@ -253,8 +261,7 @@ class AccessibilitySentinelResponseTests(unittest.TestCase):
         user is currently on. Recommending the restart would keep the expensive
         ritual alive for a condition that does not need it.
         """
-        payload = json.loads(_reply_with_script_output(_SENTINEL_OUTPUT, output_format="json"))
-        remediation = " ".join(str(value) for value in payload["remediation"].values()).lower()
+        remediation = " ".join(_sentinel_remediation().values())
 
         self.assertNotIn("restart mail", remediation)
         self.assertNotIn("quit mail", remediation)

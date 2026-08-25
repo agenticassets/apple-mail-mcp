@@ -36,7 +36,6 @@ from apple_mail_mcp.tools.compose.reply_identity import native_reply_draft_ident
 from apple_mail_mcp.tools.compose.reply_runner import (
     _delete_reply_artifact,
     _native_reply_abort_response,
-    _native_reply_effective_timeout,
     _unrecognized_reply_output_response,
 )
 from apple_mail_mcp.tools.compose.reply_script_helpers import (
@@ -48,6 +47,7 @@ from apple_mail_mcp.tools.compose.reply_scripts import (
     _build_reply_native_window_applescript,
     _build_reply_objectmodel_applescript,
 )
+from apple_mail_mcp.tools.compose.reply_typing_budget import _native_reply_effective_timeout
 from apple_mail_mcp.tools.compose.saved_draft_checks import _verify_saved_reply_draft
 from apple_mail_mcp.tools.compose.verification import (
     _extract_output_field,

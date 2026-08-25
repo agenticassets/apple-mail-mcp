@@ -20,10 +20,10 @@ refactor:
 contents of targetWindow``, which materializes the compose window's whole
 Accessibility subtree over Apple Events. Running that before every 80-character
 chunk made a 1600-character body pay twenty full subtree walks, inflating both
-wall-clock latency and the typing-timeout projection in ``reply_runner``. The
-resolved element reference is now carried across the loop and each chunk pays a
-single ``AXFocused`` read; a failed read re-resolves once before aborting, so
-the abort-on-drift guarantee is unchanged.
+wall-clock latency and the typing-timeout projection in
+``reply_typing_budget``. The resolved element reference is now carried across
+the loop and each chunk pays a single ``AXFocused`` read; a failed read
+re-resolves once before aborting, so the abort-on-drift guarantee is unchanged.
 
 **Clicking the editor is only safe before any body text exists.** ``click``
 seats the insertion point at the click location, so clicking mid-body would
@@ -54,10 +54,10 @@ def build_chunked_typing_handler(
 ) -> str:
     """Return the AppleScript handler that types a reply body in focus-guarded chunks.
 
-    Only the two numeric bounds are interpolated below; nothing user-derived
-    reaches this text, so no AppleScript escaping is required. The returned
-    handlers run at the top-level script scope (alongside the subject-helper
-    handlers) and open their own ``Mail`` / ``System Events`` tells.
+    Only numeric bounds are interpolated below; nothing user-derived reaches
+    this text, so no AppleScript escaping is required. The returned handlers run
+    at the top-level script scope (alongside the subject-helper handlers) and
+    open their own ``Mail`` / ``System Events`` tells.
     """
     return f"""
 on resolveReplyBodyEditor(expectedTitle, derivedTitle, expectedWindowId, allowEditorClick)

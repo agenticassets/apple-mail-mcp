@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Navigation hub for **apple-mail-mcp**: one Python MCP server (**41 tools**, `fastmcp>=3.1.0,<4`) shipped as PyPI package (`mcp-apple-mail`), shared Claude Code, Codex, and Cursor plugin runtime (`plugin/`), Claude Desktop/Cowork `.plugin`, and Claude Desktop `.mcpb` (`apple-mail-mcpb/`). Marketplace entries: `.claude-plugin/marketplace.json` for Claude Code and `.agents/plugins/marketplace.json` for Codex Desktop/CLI. Cursor uses its distinct plugin-local adapter; local Cursor Agent acceptance has passed, while Cursor marketplace/UI admission remains a separate distribution check. The collected-test count is single-sourced in `tools/expected_test_count.txt` (the dev-check/release gate fails on drift and prints the new number); recount with `PYTEST_ADDOPTS='' .venv/bin/pytest --collect-only tests`.
+Navigation hub for **apple-mail-mcp**: one Python MCP server (**41 tools**, `fastmcp==3.4.1`) shipped as PyPI package (`mcp-apple-mail`), shared Claude Code, Codex, and Cursor plugin runtime (`plugin/`), Claude Desktop/Cowork `.plugin`, and Claude Desktop `.mcpb` (`apple-mail-mcpb/`). Marketplace entries: `.claude-plugin/marketplace.json` for Claude Code and `.agents/plugins/marketplace.json` for Codex Desktop/CLI. Cursor uses its distinct plugin-local adapter; local Cursor Agent acceptance has passed, while Cursor marketplace/UI admission remains a separate distribution check. The collected-test count is single-sourced in `tools/expected_test_count.txt` (the dev-check/release gate fails on drift and prints the new number); recount with `PYTEST_ADDOPTS='' .venv/bin/pytest --collect-only tests`.
 
 ## This repo is PUBLIC. Check what you commit.
 
@@ -49,7 +49,7 @@ A single `plugin/` runtime serves Claude Code, Codex, and Cursor plugin installs
 
 If you change distribution, version, or filenames: re-run `bash tools/gates/dev-check.sh release` and verify `tests/infra/test_validate_manifests.py` covers the change. **Never** ship a `.plugin` whose bytes differ from the `.zip` — the validator and local release tests treat that as a hard error.
 
-Full detail: [`CLAUDE.md`](CLAUDE.md) § Distribution channels · [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) § Distribution channels.
+Full detail: [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) § Distribution channels.
 
 ## Agent orchestration (required)
 
@@ -126,5 +126,5 @@ Sync tool-count claims in manifests with `find plugin/apple_mail_mcp/tools -name
 
 `plugin/apple_mail_mcp/` (source of truth) · `plugin/` (shared Claude Code, Codex, and Cursor plugin runtime) · `.claude-plugin/` (Claude Code marketplace) · `.agents/plugins/` (Codex marketplace) · `apple-mail-mcpb/` · `tests/` · `tools/` · `docs/` · `tasks/`
 
-**Repo agent skills:** Add under `.agents/skills/<name>/`; symlink `.claude/skills/<name>` → `../../.agents/skills/<name>` (not `.cursor/skills/`). Commit and push after adding or moving skills.
+**Repo agent skills:** Add under `.agents/skills/<name>/`; symlink `.claude/skills/<name>` → `../../.agents/skills/<name>` (not `.cursor/skills/`). Commit and push after adding or moving skills. Inventory, and which vendored skills carry local corrections a re-sync would discard: [`.agents/skills/README.md`](.agents/skills/README.md).
 **Post-change ship:** Invoke `finalize-apple-mail-mcp` to sync docs, both root hubs (`AGENTS.md` and `CLAUDE.md`), and manifests, then commit and push when the user asks.

@@ -1,10 +1,14 @@
 ---
 name: cowork-plugin-customizer
 description: >
-  Customize a Claude Code plugin for a specific organization's tools and workflows.
-  Use when: customize plugin, set up plugin, configure plugin, tailor plugin, adjust plugin settings,
-  customize plugin connectors, customize plugin skill, tweak plugin, modify plugin configuration.
-compatibility: Requires Cowork desktop app environment with access to mounted plugin directories (mnt/.local-plugins, mnt/.plugins).
+  Customize an already-installed Claude Code plugin for a specific organization's tools and
+  workflows, by filling in its `~~`-prefixed placeholders or tweaking its connectors and skills.
+  Requires the Cowork desktop app: it operates on plugins mounted at mnt/.local-plugins or
+  mnt/.plugins, and cannot run in a remote container or an ordinary repo checkout. Use when a user
+  in Cowork asks to customize, set up, tailor, or configure an installed plugin for their org. Do
+  NOT use it for ordinary source work on a plugin in a git checkout — editing this repo's own
+  `plugin/` tree is normal development, not Cowork customization, and this skill's ad-hoc
+  `zip` packaging step conflicts with the enforced build-artifacts byte-parity gate.
 ---
 
 # Cowork Plugin Customization

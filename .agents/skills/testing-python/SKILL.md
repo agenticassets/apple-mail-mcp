@@ -51,23 +51,26 @@ def test_uppercase_conversion(input, expected):
 
 Don't parameterize unrelated behaviors. If the test logic differs, write separate tests.
 
-## Project-Specific Rules
+## Rules for this repo (apple-mail-mcp)
 
-### No async markers needed
+[`tests/CLAUDE.md`](../../../tests/CLAUDE.md) is canonical for this suite; read it before adding a
+test module. The points below are the ones people most often get wrong.
 
-This project uses `asyncio_mode = "auto"` globally. Write async tests without decorators:
+### Async tests use `unittest.IsolatedAsyncioTestCase`
+
+There is **no** `pytest-asyncio` and **no** `asyncio_mode` setting in this repo, so a bare
+module-level `async def test_...` is collected and then skipped with a warning — it never runs
+its assertions. Subclass `unittest.IsolatedAsyncioTestCase` instead:
 
 ```python
-# Correct
-async def test_async_operation():
-    result = await some_async_function()
-    assert result == expected
+import unittest
 
-# Wrong - don't add this
-@pytest.mark.asyncio
-async def test_async_operation():
-    ...
+class DashboardAccountScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_passes_account_through(self):
+        ...
 ```
+
+`anyio` is present only as a transitive `fastmcp` dependency, not as a test plugin.
 
 ### Imports at module level
 
@@ -75,57 +78,55 @@ Put ALL imports at the top of the file:
 
 ```python
 # Correct
-import pytest
-from fastmcp import FastMCP
-from fastmcp.client import Client
+import unittest
+from unittest.mock import patch
 
-async def test_something():
-    mcp = FastMCP("test")
+from apple_mail_mcp.tools import inbox as inbox_tools
+
+def test_something():
     ...
 
 # Wrong - no local imports
-async def test_something():
-    from fastmcp import FastMCP  # Don't do this
+def test_something():
+    from apple_mail_mcp.tools import inbox  # Don't do this
+```
+
+### Mock AppleScript at the boundary, not the FastMCP transport
+
+Tests here do **not** drive the server through a `fastmcp.client.Client`; they call the tool
+functions directly and mock the AppleScript boundary. Two established patterns:
+
+```python
+# Capture the generated script: patch subprocess.run and read kwargs["input"]
+with patch("subprocess.run", side_effect=capture) as mock_run:
+    ...
+
+# Or patch run_applescript in the module under test
+with patch("apple_mail_mcp.tools.inbox.run_applescript", return_value=payload):
     ...
 ```
 
-### Use in-memory transport for testing
+Templates live in `tests/cross_cutting/test_modernization_3_1_5.py` (`_ScriptCapture`),
+`tests/search/test_mail_search_tools.py`, and `tests/compose/test_compose_tools.py`.
+Local CI-equivalent gates never launch Mail.app.
 
-Pass FastMCP servers directly to clients:
+### Fixtures must be synthetic — this repo is PUBLIC
 
-```python
-from fastmcp import FastMCP
-from fastmcp.client import Client
+Use `sender@example.com` and invented subjects. Never build a fixture by pasting a real
+message, header block, `Message-ID`, or account UUID out of a live run, even when reproducing
+a real bug: reduce it to the shape that triggers the bug.
 
-mcp = FastMCP("TestServer")
+### Test count is single-sourced
 
-@mcp.tool
-def greet(name: str) -> str:
-    return f"Hello, {name}!"
+The collected-test count lives only in `tools/expected_test_count.txt`. After adding or removing
+tests, recount and update that one file — the dev-check/release gate fails on drift and prints
+the new number:
 
-async def test_greet_tool():
-    async with Client(mcp) as client:
-        result = await client.call_tool("greet", {"name": "World"})
-        assert result[0].text == "Hello, World!"
+```bash
+PYTEST_ADDOPTS='' .venv/bin/pytest --collect-only tests
 ```
 
-Only use HTTP transport when explicitly testing network features.
-
-### Inline snapshots for complex data
-
-Use `inline-snapshot` for testing JSON schemas and complex structures:
-
-```python
-from inline_snapshot import snapshot
-
-def test_schema_generation():
-    schema = generate_schema(MyModel)
-    assert schema == snapshot()  # Will auto-populate on first run
-```
-
-Commands:
-- `pytest --inline-snapshot=create` - populate empty snapshots
-- `pytest --inline-snapshot=fix` - update after intentional changes
+Do not scatter counts through prose docs.
 
 ## Fixtures
 
@@ -200,21 +201,26 @@ async def test_async_raises():
 
 ## Running Tests
 
+Use the repo venv (`.venv/`, editable install). There is no `uv` and no `pytest-xdist` here, so
+`uv run` and `-n auto` both fail:
+
 ```bash
-uv run pytest -n auto              # Run all tests in parallel
-uv run pytest -n auto -x           # Stop on first failure
-uv run pytest path/to/test.py      # Run specific file
-uv run pytest -k "test_name"       # Run tests matching pattern
-uv run pytest -m "not integration" # Exclude integration tests
+.venv/bin/pytest tests/                 # full suite
+.venv/bin/pytest tests/ -x              # stop on first failure
+.venv/bin/pytest tests/cli/test_cli.py  # specific file
+.venv/bin/pytest -k "test_name"         # tests matching pattern
+bash tools/gates/dev-check.sh           # manifests + module budget + pytest + test-count gate
 ```
 
 ## Checklist
 
 Before submitting tests:
 - [ ] Each test tests one thing
-- [ ] No `@pytest.mark.asyncio` decorators
+- [ ] Async tests subclass `unittest.IsolatedAsyncioTestCase` (no bare `async def test_`)
 - [ ] Imports at module level
 - [ ] Descriptive test names
-- [ ] Using in-memory transport (not HTTP) unless testing networking
+- [ ] AppleScript mocked at the boundary; no test launches Mail.app
+- [ ] Fixtures are synthetic (`sender@example.com`) — no real mail data
+- [ ] `tools/expected_test_count.txt` updated if the collected count changed
 - [ ] Parameterization for variations of same behavior
 - [ ] Separate tests for different behaviors

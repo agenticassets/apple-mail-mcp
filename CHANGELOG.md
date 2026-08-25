@@ -1,8 +1,11 @@
 # Changelog
 
+All notable changes to **apple-mail-mcp** (PyPI: `mcp-apple-mail`) are documented
+here. The plugin/MCPB/marketplace versions track this file.
+
 ## Unreleased
 
-## 3.12.0 - 2026-08-24
+## 3.12.0 - 2026-08-25
 
 Two lanes. The first is the directory listing work: metadata, documentation,
 and validators that a vendor plugin-directory reviewer (Claude plugin
@@ -66,7 +69,9 @@ behavior — see **Drafting hardening** below.
   which is why waiting is the fix rather than retyping. The budget is computed from the body length
   in AppleScript (so a retype pass re-scales) and mirrored in Python by
   `constants.typing_settle_attempts()`, which `_native_reply_effective_timeout` now adds to its
-  projected timeout. Those two must agree: if the timeout were still projected from chunk-typing time
+  projected timeout. That projection moved out of `reply_runner.py` into its own leaf module,
+  `plugin/apple_mail_mcp/tools/compose/reply_typing_budget.py`, so the two halves of the agreement
+  sit next to each other. Those two must agree: if the timeout were still projected from chunk-typing time
   alone, `AppleScriptTimeout` could fire mid-drain and strand a partially typed compose window, which
   is worse than the truncation being fixed. With the scaled budget, 5,000-character bodies and
   signature-enabled bodies both pass, and chunk 200 — designated the positive control that "must
@@ -170,12 +175,17 @@ failure reported as prose to a caller parsing JSON.
   failed `REPLY_BODY_MISMATCH` on 4 of 4 runs; those failures are trustworthy
   because the contamination channel can only manufacture passes, never
   failures. They were also *slower* (69-71 s against 33-39 s), because a
-  mismatch burns the retype path, so the larger sizes are worse on both speed
-  and safety. Larger chunks type more text between panel dismissals, so a
-  substitution lands before the rejection does. At 1,200 characters every size
-  passed, including 250: a short body does not discriminate, and re-testing
-  this needs at least 2,400 characters. Full audit, the defect list it
-  uncovered, and the design that would settle the boundary:
+  mismatch burns the retype path. At 1,200 characters every size passed,
+  including 250: a short body does not discriminate, and re-testing this needs
+  at least 2,400 characters.
+  *Superseded within this same release:* the failures happened, but the
+  mechanism recorded here was wrong, and so was the conclusion that a larger
+  chunk is less safe. Nothing was substituted — every failure was a clean
+  prefix, and chunk size was only measuring how much undrained text sat in the
+  editor at save time. Once the drain is waited for, chunk 200 (the sweep's
+  designated "must corrupt" positive control) passes, and the shipped value is
+  300. Full audit, the defect list it uncovered, and the design that would
+  settle the boundary:
   `tasks/active/native-reply/session-degradation-test-plan-2026-08-25.md`.
 
 - **The native reply identity capsule parser rejected every valid capsule.**
@@ -281,6 +291,48 @@ helpers into `reply_script_helpers.py` to stay under the module line budget;
 and a new source lint (`tests/cross_cutting/test_applescript_handler_names.py`)
 catches AppleScript handlers whose `end` name does not match their `on` name,
 which `osacompile` accepts and silently rewrites, so no compile gate can see it.
+
+### Documentation and skills accuracy sweep (2026-08-25)
+
+No runtime behavior changed. Every `CLAUDE.md` hub, guide, and skill in the
+tree was re-read against source, and the claims that no longer held were
+corrected rather than left to mislead the next agent.
+
+- **Shipped skills described parameters and defaults that do not exist.**
+  `calendar-operator` documented a `calendar` argument on `check_availability`
+  (the tool takes `calendars`); `email-management` targeted a non-Inbox
+  mailbox through `list_inbox_emails`, which has no `mailbox` parameter; six
+  sites reviewed flag state through `search_emails`, whose rows carry no flag
+  field. Bulk-action guidance now matches the real defaults — `move_email`
+  previews only when asked (`dry_run=False`), `update_email_status` has no
+  `dry_run` at all, and `manage_trash` silently caps at `max_deletes=5`.
+- **The native reply length cap was documented nowhere an agent would look.**
+  `email-drafting` now states it: `reply_to_email` refuses with
+  `REPLY_BODY_TYPING_BUDGET_EXCEEDED` before touching Mail when projected
+  typing time exceeds the ceiling, nothing is created when it fires, and an
+  explicit `timeout` cannot lift it.
+- **Draft deletion guidance was missing its confirmation requirement.** The
+  `REPLY_BODY_MISMATCH` recovery told an agent to delete a draft outright.
+  It now requires explicit user confirmation of that specific draft, even when
+  the same call created it.
+- **A read-ratio heuristic was built on a number that is not measured.**
+  `unread count` is a cached aggregate that drifts low; the analytics guidance
+  now carries the provenance and is downgraded to a directional signal.
+- **Repo-maintenance skills carried guidance for a different codebase** —
+  `uv`/`uv.lock`, `pytest -n auto`, `pytest-asyncio`, and an in-memory FastMCP
+  client transport, none of which exist here. They now describe this repo's
+  actual venv, gates, and `unittest.IsolatedAsyncioTestCase` async pattern.
+  New [`.agents/skills/README.md`](.agents/skills/README.md) records which
+  vendored skills carry local corrections that a re-sync from upstream would
+  silently discard.
+- **Corrected structural claims in the hubs:** the `fastmcp` pin, a `core.py`
+  module that is now a `core/` package, `AppleScriptBackend._check_window`
+  (which does not exist — the bound is enforced at issue time in
+  `bounded_scan.py`), the two-layer in-process plus cross-process Mail lock,
+  and the release version table, which covers seven files rather than six.
+- A merge artifact that had spliced a second file preamble and a duplicate
+  `3.11.3` heading into the middle of this changelog is removed, and six
+  broken relative links under `tasks/reference/` are repaired.
 
 ## 3.11.9 - 2026-08-22
 
@@ -1021,13 +1073,6 @@ tooling was too blind to see.
 
 - Add a hash-locked offline wheelhouse for the macOS arm64 CPython 3.13 plugin release channel.
 - Make the plugin launcher fail closed instead of downloading runtime dependencies.
-
-All notable changes to **apple-mail-mcp** (PyPI: `mcp-apple-mail`) are documented
-here. The plugin/MCPB/marketplace versions track this file.
-
-## Unreleased
-
-## 3.11.3 - 2026-07-11
 
 ### Fixed
 

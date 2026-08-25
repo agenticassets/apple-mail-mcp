@@ -114,7 +114,7 @@ When in doubt, copy the pattern from `search/emails.py`'s per-message loop — i
 
 ## Account scoping
 
-`account: Optional[str] = None` → `server.DEFAULT_MAIL_ACCOUNT`; error if unset. Exceptions: `synchronize_account` (None = all accounts, but requires `confirm_sync=True`). `inbox_dashboard` also respects `DEFAULT_MAIL_ACCOUNT` and only fans out across all accounts when no account/default is configured. `all_accounts=True` overrides default scoping.
+`account: Optional[str] = None` → `server.DEFAULT_MAIL_ACCOUNT`; error if unset. Exceptions: `synchronize_account` — a bare `account=None` with no `DEFAULT_MAIL_ACCOUNT` is an **error**, not a fan-out; syncing every account requires `all_accounts=True` **and** `confirm_sync=True` (and `all_accounts=True` also overrides the configured default). `inbox_dashboard` also respects `DEFAULT_MAIL_ACCOUNT` and only fans out across all accounts when no account/default is configured. `all_accounts=True` overrides default scoping.
 
 ## JSON `output_format`
 

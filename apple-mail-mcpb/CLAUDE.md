@@ -7,16 +7,16 @@ Build files for the **`.mcpb`** distributable. Same Python server as [`plugin/`]
 
 | File | Role |
 |------|------|
-| `manifest.json` | `manifest_version` (MCPB spec 0.3), version, `tools[]`, `user_config`, server entry, `compatibility`, `privacy_policies`, `support` |
+| `manifest.json` | `manifest_version` (MCPB spec 0.3), version, `tools[]`, `prompts[]`, `user_config`, server entry, `compatibility`, `privacy_policies`, `documentation`, `support` |
 | `build-mcpb.sh` | Stage `plugin/` → zip `../apple-mail-mcp-v{VERSION}.mcpb` |
 
 ```bash
 bash tools/gates/dev-check.sh release
 ```
 
-Use `cd apple-mail-mcpb && ./build-mcpb.sh` only for bundle-only debugging; the release gate rebuilds both distributables and runs the validator/test/smoke stack.
+Use `cd apple-mail-mcpb && ./build-mcpb.sh` only for bundle-only debugging; the release gate rebuilds all three distributables and runs the validator/test/smoke stack.
 
-Copies `apple_mail_mcp.py`, `start_mcp.sh`, `requirements.lock`, `wheelhouse/`, `apple_mail_mcp/`, mirrored `plugin/skills` → **`skills/`**, and `ui/` in build output. No venv is bundled: `start_mcp.sh` creates one from the offline macOS arm64 CPython 3.13 payload. Keep the embedded README platform and Python 3.13 requirements in sync.
+Copies `apple_mail_mcp.py`, `start_mcp.sh`, `requirements.txt`, `requirements.lock`, `wheelhouse/`, `apple_mail_mcp/`, mirrored `plugin/skills` → **`skills/`**, and `ui/` in build output, plus this folder's `manifest.json` and `README.md`. No venv is bundled: `start_mcp.sh` creates one from the offline macOS arm64 CPython 3.13 payload. Keep the embedded README platform and Python 3.13 requirements in sync.
 
 **Build must use `mcpb pack`** when available (official CLI, `npm install -g @anthropic-ai/mcpb`). Raw `zip -r .` emits zero-byte directory entries that `mcpb unpack` and Claude Desktop's installer treat as files — install fails with `ENOENT: no such file or directory, open '.../ui/'`. `build-mcpb.sh` prefers `mcpb pack` and falls back to `zip -X -D` only when the CLI is missing. `tools/validators/validate_manifests.py` (checks in `tools/manifest_checks/`) enforces exact artifact membership plus the no-directory-entry rule on every commit.
 
@@ -53,7 +53,7 @@ Spec: https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md · Subm
 | Artifact | `apple-mail-plugin.zip` | `apple-mail-mcp-v{VERSION}.mcpb` | `apple-mail.plugin` (byte-identical to the `.zip`) |
 | Entrypoint | `start_mcp.sh` via `mcpServers` in `plugin.json` | `start_mcp.sh` via `manifest.json` `server.mcp_config` | `start_mcp.sh` via `mcpServers` in `plugin.json` |
 
-Version sync: use the six-file release table in [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md). Deferred release/backlog items live in [`tasks/reference/robustness-backlog-2026-05-22.md`](../tasks/reference/robustness-backlog-2026-05-22.md).
+Version sync: use the release version table in root [`CLAUDE.md`](../CLAUDE.md) § Version bump (seven files, including `plugin/.cursor-plugin/plugin.json`); the authoritative check is `_public_version_checks()` in [`tools/validators/validate_manifests.py`](../tools/validators/validate_manifests.py). Deferred release/backlog items live in [`tasks/reference/robustness-backlog-2026-05-22.md`](../tasks/reference/robustness-backlog-2026-05-22.md).
 
 ## Related
 

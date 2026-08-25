@@ -48,7 +48,14 @@ Key pages to review:
 
 #### 1.3 Study Framework Documentation
 
-**Recommended stack:**
+> **This repo's stack is already chosen — do not apply the greenfield recommendation below to it.**
+> apple-mail-mcp is **Python on FastMCP over stdio** (`plugin/apple_mail_mcp/`, launched by
+> `plugin/start_mcp.sh`), because the server drives Mail.app through local `osascript`. It must stay
+> local and stdio. Use this skill here for its **tool-quality** guidance (§2.3, §3.1) — naming,
+> descriptions, annotations, output schemas, error shape, evals — and skip Phases 1–2, which
+> scaffold a server that already exists. Follow the **Python** links below, not the TypeScript ones.
+
+**Recommended stack (for a new, greenfield server only):**
 - **Language**: TypeScript (high-quality SDK support and good compatibility in many execution environments e.g. MCPB. Plus AI models are good at generating TypeScript code, benefiting from its broad usage, static typing and good linting tools)
 - **Transport**: Streamable HTTP for remote servers, using stateless JSON (simpler to scale and maintain, as opposed to stateful sessions and streaming responses). stdio for local servers.
 

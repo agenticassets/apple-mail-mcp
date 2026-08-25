@@ -161,8 +161,15 @@ def test_hook_accepts_posttooluse_json_on_stdin() -> None:
 
 
 def test_ledger_entries_are_real_files_with_reasons() -> None:
+    """Every recorded gap names a live file and says why.
+
+    The ledger is empty as of 2026-08 and an empty ledger is the goal state,
+    not a broken test: it means no module emits AppleScript this hook cannot
+    reach. Emptiness is never a silent pass either — an unreachable module
+    that is *not* listed exits non-zero (``test_unreachable_inline_script_is_loud``),
+    so the loud-gap machinery is exercised whether or not the ledger has rows.
+    """
     hook = _load_hook_module()
-    assert hook.UNCHECKABLE, "an empty ledger would mean nothing is tracked"
     for rel, reason in hook.UNCHECKABLE.items():
         assert (PLUGIN_PACKAGE / rel).exists(), f"ledger entry {rel} no longer exists"
         assert len(reason) > 20, f"ledger entry {rel} needs a real reason, got {reason!r}"
@@ -173,8 +180,35 @@ def test_ledger_has_no_stale_entries() -> None:
     """A ledgered module the hook can now fully check must be de-ledgered."""
     hook = _load_hook_module()
     paths = [str(PLUGIN_PACKAGE / rel) for rel in hook.UNCHECKABLE]
+    if not paths:
+        pytest.skip("the ledger is empty, so no entry can be stale")
     result = _run(["--report", *paths])
     assert "STALE LEDGER ENTRY" not in result.stdout, result.stdout
+
+
+@requires_osacompile
+def test_formerly_ledgered_modules_still_compile_a_script() -> None:
+    """The three de-ledgered modules must keep compiling, not silently regress.
+
+    Each of these built AppleScript no gate ever compiled until its tool was
+    handed arguments it accepts — ``reply_runner`` a matching
+    ``NativeReplyDraftIdentity`` (its script *deletes a draft*),
+    ``attachments`` a ``save_path`` inside the home directory, ``export`` the
+    scope/format combination that reaches the one script it builds itself.
+    Without this test, a sample drifting back out of agreement would return
+    them to "no AppleScript to check", which reads exactly like a clean pass.
+    """
+    modules = [
+        "tools/compose/reply_runner.py",
+        "tools/manage/attachments.py",
+        "tools/analytics/export.py",
+    ]
+    result = _run(["--report", *(str(PLUGIN_PACKAGE / rel) for rel in modules)])
+    assert result.returncode == 0, result.stderr
+    for rel in modules:
+        line = next(ln for ln in result.stdout.splitlines() if ln.startswith(f"plugin/apple_mail_mcp/{rel}:"))
+        assert "compiled " in line, line
+        assert "compiled 0 " not in line, line
 
 
 # --------------------------------------------------------------------------

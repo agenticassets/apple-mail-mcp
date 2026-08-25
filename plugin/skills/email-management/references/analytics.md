@@ -4,16 +4,18 @@ Use analytics tools to understand email patterns before reorganizing or cleaning
 
 ## Tools
 
-- `get_statistics(scope="account_overview")`: totals, read/unread ratio, flagged count, sample senders, mailbox distribution.
+- `get_statistics(scope="account_overview")`: totals, unread/read counts, flagged count, sample senders, mailbox distribution. `flagged`, `top_senders`, `with_attachments`, and `mailbox_distribution` are sample-based (bounded by `days_back`), not mailbox-wide.
 - `get_statistics(scope="sender_stats", sender="name@example.com")`: message count and unread count from a specific sender, plus attachment volume.
-- `get_statistics(scope="mailbox_breakdown", mailbox="FolderName")`: per-mailbox totals, unread count, and read ratio.
+- `get_statistics(scope="mailbox_breakdown", mailbox="FolderName")`: per-mailbox totals, unread count, and derived read count.
+
+**Unread is not measured in `account_overview` or `mailbox_breakdown`.** Both report Mail's cached `unread count` aggregate, which drifts low (measured on a 25,012-message Exchange Inbox: 3,236 reported against 10,016 actual, a 68% under-report). The payload labels it `unread_count_source="mail_cached_aggregate"` / `unread_count_measured=false`, and `read` is `total - unread`, so it inherits the same error with the sign flipped (`read_count_measured=false`). Read those labels before quoting either number, and never present them as exact. `count of messages` totals are reliable. Only `sender_stats` counts per-message read status and reports `unread_count_measured=true`.
 - `get_top_senders(account="...", top_n=20)`: surface the heaviest senders ranked by volume. Use this to identify newsletter overload, noisy systems, or recurring threads worth bulk-archiving.
 
 ## Workflows
 
 ### Understand overall load
 
-Run `get_statistics(scope="account_overview", days_back=2)` once per account for a quick load sample. Increase the window only when the user explicitly wants a heavier analysis pass. Look at the unread ratio and sender sample. A read ratio below 50% usually means inbound volume exceeds processing capacity; fix that with filters and unsubscribes before tweaking folders.
+Run `get_statistics(scope="account_overview", days_back=2)` once per account for a quick load sample. Increase the window only when the user explicitly wants a heavier analysis pass. Look at the sender sample, and read the unread/read counts as a rough directional signal only (they come from the cached aggregate above). A read share that looks well below half usually means inbound volume exceeds processing capacity; fix that with filters and unsubscribes before tweaking folders. Do not build a threshold rule on the exact ratio, and use `sender_stats` when a per-sender unread proportion has to be right.
 
 ### Diagnose a noisy sender
 
@@ -36,4 +38,4 @@ For a true full-inbox analytics pass, see [`large-inbox-rules.md`](large-inbox-r
 | One sender accounts for more than 10% of inbox | Create a dedicated folder or unsubscribe |
 | Many unread messages in Archive | Archive is being used as a triage queue; run bulk cleanup |
 | Flagged count growing week over week | Schedule a follow-up review block |
-| Mailbox over 5,000 messages | Export and prune (see `references/bulk-cleanup.md`) |
+| Mailbox over 5,000 messages | Export and prune (see `bulk-cleanup.md`) |

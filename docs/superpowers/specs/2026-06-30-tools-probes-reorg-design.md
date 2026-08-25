@@ -1,5 +1,15 @@
 # Design: reorganize `tools/` with a `tools/probes/` subfolder
 
+> **Historical record (executed).** `tools/probes/` exists and holds these
+> helpers. A later reorganization also moved the shell gates into
+> `tools/gates/` and the Python validators into `tools/validators/`, so the
+> `tools/dev-check.sh`, `tools/validate-codex-plugin.sh`, and
+> `tools/check_wrapper_surface.py` paths quoted below are the pre-move ones.
+> Use `tools/gates/…` and `tools/validators/…` today; see
+> [`tools/CLAUDE.md`](../../../tools/CLAUDE.md). The collected-test count
+> quoted in Verification is that day's and is now single-sourced in
+> [`tools/expected_test_count.txt`](../../../tools/expected_test_count.txt).
+
 **Date:** 2026-06-30
 **Scope:** Conservative reorganization of the `tools/` directory.
 **Constraint:** Everything must still work; verified and validated through the full release gate.

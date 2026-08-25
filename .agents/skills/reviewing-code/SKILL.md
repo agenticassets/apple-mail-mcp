@@ -24,7 +24,7 @@ Even perfect code for unwanted features should be rejected.
 When a PR adapts code to a new version of a dependency (e.g., removing a parameter that was dropped upstream, using a new API):
 - **The version pin in `pyproject.toml` must match.** If the change breaks compatibility with the previously-pinned minimum version, the minimum version must be bumped. Otherwise users on the old version get a regression.
 - **If backwards compatibility with the old version is desired**, the code must handle both versions (e.g., try/except, version check). Simply deleting the old API usage without bumping the pin is always wrong — it silently breaks users on the old version.
-- **Lock file (`uv.lock`) changes should be scoped to the PR's purpose.** A PR fixing a ty compatibility issue should not also include unrelated dependency version bumps (anthropic, google-auth, etc.) from running `uv sync --upgrade`. These create noise and make the diff harder to review.
+- **Dependency edits should be scoped to the PR's purpose.** This repo has no lock file — `pyproject.toml` is the only pin — so an unrelated bump there is pure diff noise. `fastmcp` is pinned to an exact version; moving that pin is a behavior change needing its own justification and a `dev-check.sh release` run, not a drive-by edit.
 
 ### API design and naming
 
@@ -93,7 +93,7 @@ If something needs work, your review should help it get there through specific, 
 
 Before approving, verify:
 
-- [ ] All required development workflow steps completed (uv sync, prek, pytest)
+- [ ] Local gates green: `bash tools/gates/dev-check.sh` (release tier before shipping)
 - [ ] Changes align with repository patterns and conventions
 - [ ] API changes are documented and backwards-compatible where possible
 - [ ] Error handling follows project patterns (specific exception types)

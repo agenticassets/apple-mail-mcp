@@ -143,7 +143,11 @@ python3 .agents/skills/plugin-creator/scripts/create_basic_plugin.py my-plugin -
 - Preserve any existing marketplace `interface.displayName`.
 - When generating marketplace entries, always write `policy.installation`, `policy.authentication`, and `category` even if their values are defaults.
 - Add `policy.products` only when the user explicitly asks for that override.
-- Keep marketplace `source.path` relative to repo root as `./plugins/<plugin-name>`.
+- Keep marketplace `source.path` relative to repo root, pointing at the plugin's actual directory.
+  **In this repo that path is `./plugin` (singular).** `.agents/plugins/marketplace.json` has exactly
+  one entry, `apple-mail`, with `"path": "./plugin"`, and the shared runtime lives there. Do not
+  "normalize" it to `./plugins/<plugin-name>` — that directory does not exist and the rewrite breaks
+  the Codex install surface.
 
 ## Reference to exact spec sample
 
@@ -153,8 +157,11 @@ For the exact canonical sample JSON for both plugin manifests and marketplace en
 
 ## Validation
 
-After editing `SKILL.md`, run:
+There is no `quick_validate.py` in this repo. Validate manifest and marketplace edits with the
+gates this repo actually enforces:
 
 ```bash
-python3 <path-to-skill-creator>/scripts/quick_validate.py .agents/skills/plugin-creator
+bash tools/gates/validate_manifests.sh      # manifest parity, versions, tool counts
+bash tools/gates/validate-codex-plugin.sh   # Codex plugin runtime smoke
+bash tools/gates/dev-check.sh               # manifests + module budget + pytest + test-count
 ```

@@ -1,5 +1,5 @@
 ---
-name: Plugin Structure
+name: plugin-structure
 description: This skill should be used when the user asks to "create a plugin", "scaffold a plugin", "understand plugin structure", "organize plugin components", "set up plugin.json", "use ${CLAUDE_PLUGIN_ROOT}", "add commands/agents/skills/hooks", "configure auto-discovery", or needs guidance on plugin directory layout, manifest configuration, component organization, file naming conventions, or Claude Code plugin architecture best practices.
 ---
 
@@ -349,7 +349,7 @@ Claude Code automatically discovers and loads components:
 **Discovery timing**:
 - Plugin installation: Components register with Claude Code
 - Plugin enable: Components become available for use
-- No restart required: Changes take effect on next Claude Code session
+- Changes take effect on the next Claude Code session: restart Claude Code to reload plugin configuration
 
 **Override behavior**: Custom paths in `plugin.json` supplement (not replace) default directories
 

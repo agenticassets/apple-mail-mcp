@@ -13,6 +13,8 @@ Inbox Zero is a rigorous approach to email management aimed at keeping your inbo
 
 For every email in your inbox, choose ONE action:
 
+**Nothing here sends mail.** "Forward" and "Respond" name the user's intent, not the tool's effect: `reply_to_email` and `forward_email` default to `mode="draft"` and the default plugin install runs `--draft-safe`, which refuses send outright. Every outbound message is a draft the user reviews and sends themselves. Do not add `send=True` / `mode="send"` to make these steps match their headings.
+
 ### 1. Delete (or Trash)
 **When**: Email has no value, spam, unwanted newsletters
 **Tool**: collect `message_id` from `list_inbox_emails` or `search_emails`, then preview with `manage_trash(action="move_to_trash", message_ids=[...])` and repeat the same call with `dry_run=False` to act. Do not pass `subject_keyword=` or `sender=` to `manage_trash` (returns `TARGET_SELECTOR_DEPRECATED`).
@@ -105,11 +107,15 @@ For each email, apply the 5 D's:
 1. **Quick Scan**: Subject and sender
 2. **Decision**: Which of the 5 actions?
 3. **Execute**: Use appropriate tool (mutations always pass `message_id` from the current row)
-4. **Archive or File**: `move_email(message_ids=["..."], to_mailbox="Archive")` or a specific folder
+4. **Archive or File**: preview with `move_email(message_ids=["..."], to_mailbox="Archive", dry_run=True)`, confirm with the user, then repeat with `dry_run=False`. `move_email`'s `dry_run` defaults to `False`, so omitting it moves mail immediately.
 
 **Step 4: Review Flagged Items**
 ```
-search_emails(mailboxes=["INBOX", "Archive"], read_status="all")  # Look for flags
+# No tool lists flagged messages: search_emails rows carry no flag field.
+# Use get_needs_response (it labels flagged rows HIGH) or read the flagged
+# count from get_statistics(scope="account_overview") -- sample-based -- and
+# review the flags themselves in Mail.app, then unflag by exact message_ids.
+get_needs_response(days_back=7, max_results=10, output_format="json")
 ```
 - Check items you flagged earlier
 - Take action if ready
@@ -231,7 +237,9 @@ Track these to measure success:
 
 3. **Flag Accumulation**: Target: <10 flagged items
    ```
-   search_emails()  # Check flags
+   # search_emails rows carry no flag field. The flagged count comes from the
+   # bounded sample in get_statistics; the flags themselves are reviewed in Mail.app.
+   get_statistics(scope="account_overview", days_back=7)
    ```
 
 4. **Draft Accumulation**: Target: <5 active drafts
@@ -277,7 +285,7 @@ Track these to measure success:
 | Quick reply | `get_email_thread(account="Work", message_id="...")` then `reply_to_email(reply_body="...", message_id="...")`; load **`email-drafting`** for native reply |
 | Create draft (in-thread defer) | `reply_to_email(message_id="...", mode="draft", reply_body="...")`; load **`email-drafting`** for native reply defaults |
 | Move to trash | `manage_trash(action="move_to_trash", message_ids=[...])` previews; repeat the same call with `dry_run=False` to act |
-| Archive | `move_email(message_ids=[...], to_mailbox="Archive")` |
+| Archive | `move_email(message_ids=[...], to_mailbox="Archive", dry_run=True)` to preview, then repeat with `dry_run=False` after the user confirms (`dry_run` defaults to `False`, so an omitted flag moves mail immediately) |
 | Flag for later | `update_email_status(action="flag", message_ids=[...])` |
 | List drafts | `manage_drafts(action="list")` |
 | Search selected folders | `search_emails(mailboxes=["INBOX", "Archive"], ...)` |

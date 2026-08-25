@@ -26,6 +26,8 @@ source identity.
 
 1. On a clean source `main` checkout, run `bash tools/gates/source-release-gate.sh`.
 2. Create the signed tag with `bash tools/gates/create-release-tag.sh --confirm-create`.
+   Run the same script with no flags first for a preflight: that is its default
+   mode, and it checks the tag without creating anything.
 3. Push that tag with `git push origin vX.Y.Z`.
 4. Run `bash tools/gates/marketplace-handoff.sh vX.Y.Z`. Do not copy a commit
    or source inventory hash by hand, and let the Marketplace tool compute its

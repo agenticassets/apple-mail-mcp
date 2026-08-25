@@ -1,5 +1,11 @@
 # Apple Mail MCP Live Verification Report (2026-08-01)
 
+> **Historical record:** a 2026-08-01 snapshot of one branch, not a current
+> baseline. Its collected-test figure is that day's; the live count is
+> single-sourced in [`tools/expected_test_count.txt`](../../tools/expected_test_count.txt).
+> For current procedures use [`docs/AGENT_LIVE_TESTING.md`](../AGENT_LIVE_TESTING.md),
+> and re-run the gates rather than citing this report as present-day evidence.
+
 **Branch:** `fix/apple-mail-linear-backlog-20260731`
 **Scope:** Redacted, evidence-limited verification of the Linear-backlog and final remediation changes.
 **Safety:** The live probe was read-only. No email was sent, drafted, moved,

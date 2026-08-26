@@ -37,8 +37,11 @@ from apple_mail_mcp.core.normalization import (
 from apple_mail_mcp.core.preferences import P, R, inject_preferences
 from apple_mail_mcp.core.replied import (
     REPLIED_HEADER_READ_CAP,
+    SentReplySnapshot,
+    build_sent_reply_snapshot_script,
     fetch_replied_ids,
     fetch_replied_ids_script,
+    fetch_sent_reply_snapshot,
     replied_ids_script,
     sent_mailbox_resolve_script,
 )
@@ -65,6 +68,7 @@ from apple_mail_mcp.core.validation import (
 __all__ = [
     "INBOX_NAMES",
     "REPLIED_HEADER_READ_CAP",
+    "SentReplySnapshot",
     "SENSITIVE_DIRS",
     "AppleScriptRunner",
     "AppleScriptTimeout",
@@ -76,6 +80,7 @@ __all__ = [
     "build_date_filter",
     "build_email_fields_script",
     "build_filter_condition",
+    "build_sent_reply_snapshot_script",
     "build_mailbox_ref",
     "contains_any_condition",
     "content_preview_script",
@@ -84,6 +89,7 @@ __all__ = [
     "escape_applescript",
     "fetch_replied_ids",
     "fetch_replied_ids_script",
+    "fetch_sent_reply_snapshot",
     "inbox_mailbox_script",
     "inject_preferences",
     "list_mail_account_names",

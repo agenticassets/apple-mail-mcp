@@ -209,14 +209,8 @@ def resolve_create_target(calendar_name: str | None, *, timeout: int | None = No
     if _server.DEFAULT_CALENDAR:
         return resolve_calendar_selector(_server.DEFAULT_CALENDAR, known)
     engine = _calendar.get_engine()
-    # CalendarReadEngine provides the opaque ID.  The guarded fallback keeps
-    # third-party/test engines that predate that internal protocol extension
-    # compatible while they are upgraded.
     default_id_getter = getattr(engine, "default_calendar_id", None)
-    engine_default = default_id_getter() if callable(default_id_getter) else None
-    if engine_default:
-        return resolve_calendar_selector(engine_default, known)
-    engine_default = engine.default_calendar_name()
+    engine_default = (default_id_getter() if callable(default_id_getter) else None) or engine.default_calendar_name()
     if engine_default:
         return resolve_calendar_selector(engine_default, known)
     raise ToolError(
@@ -293,6 +287,7 @@ def collect_window_events(
     engine: CalendarReadEngine,
     window: CalendarWindow,
     calendar_ids: list[str],
+    calendar_selector_kinds: dict[str, str] | None = None,
     expand_recurring: bool = True,
     include_detail: bool = False,
     event_ids: list[str] | None = None,
@@ -301,12 +296,11 @@ def collect_window_events(
     include_all_day: bool = True,
     timeout: int | None = None,
     budget: CallBudget | None = None,
+    fail_on_total_failure: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], bool]:
-    """Fetch, expand, filter, and sort events across the calendar scope.
+    """Return sorted event payloads, per-calendar errors, and budget exhaustion.
 
-    Returns (event payloads sorted by start, per-calendar errors,
-    budget_exhausted). Per-calendar failures produce partial results; only
-    ``CALENDAR_WINDOW_TOO_DENSE`` aborts the whole call.
+    Per-calendar failures are partial; only ``CALENDAR_WINDOW_TOO_DENSE`` aborts.
     """
     tz = tz_for_window(window)
     budget = budget or CallBudget()
@@ -315,6 +309,8 @@ def collect_window_events(
     budget_exhausted = False
     occurrence_ceiling = int(CALENDAR_BOUNDS["OCCURRENCE_SCAN_CEILING"])
     occurrence_count = 0
+    successful_calendar_reads, failed_calendar_reads = 0, []
+    calendar_selector_kinds = calendar_selector_kinds or {}
 
     for index, calendar_id in enumerate(calendar_ids):
         if budget.exhausted():
@@ -332,6 +328,7 @@ def collect_window_events(
                 include_detail=include_detail or bool(participant_query),
                 event_ids=event_ids,
                 timeout=timeout,
+                selector_kind=calendar_selector_kinds.get(calendar_id, "calendar_object_reference"),
             )
             calendar_errors.extend(f"{calendar_id}: {err}" for err in row_errors)
             recurring_masters: dict[str, dict[str, Any]] = {}
@@ -353,6 +350,7 @@ def collect_window_events(
                     calendar_id,
                     include_detail=include_detail or bool(participant_query),
                     timeout=timeout,
+                    selector_kind=calendar_selector_kinds.get(calendar_id, "calendar_object_reference"),
                 )
                 calendar_errors.extend(f"{calendar_id}: {err}" for err in master_errors)
                 for raw in masters:
@@ -405,12 +403,26 @@ def collect_window_events(
                             expansion="python",
                         )
                     )
+            successful_calendar_reads += 1
         except AppleScriptTimeout:
             calendar_errors.append(f"{calendar_id}: timed out. {AUTOMATION_PANE_NOTE}")
         except ToolError as exc:
             if exc.code == "CALENDAR_WINDOW_TOO_DENSE":
                 raise
+            failed_calendar_reads.append(exc)
             calendar_errors.append(f"{calendar_id}: [{exc.code}] {exc.message}")
+
+    if fail_on_total_failure and calendar_ids and successful_calendar_reads == 0:
+        if failed_calendar_reads and all(exc.code == "CALENDAR_ACCESS_DENIED" for exc in failed_calendar_reads):
+            raise failed_calendar_reads[0]
+        raise ToolError(
+            code="CALENDAR_READ_FAILED",
+            message="Every explicitly selected calendar failed before a bounded event read completed.",
+            remediation={
+                "preferred": "Call list_calendars again and retry with a current stable calendar_id.",
+                "calendar_errors": calendar_errors,
+            },
+        )
 
     if not include_all_day:
         payloads = [p for p in payloads if not p.get("all_day")]
@@ -426,6 +438,7 @@ def find_conflicts(
     start: datetime,
     end: datetime,
     timezone_name: str | None,
+    selector_kind: str = "calendar_object_reference",
     timeout: int | None = None,
     exclude_event_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -441,8 +454,10 @@ def find_conflicts(
         engine=engine,
         window=window,
         calendar_ids=[calendar_id],
+        calendar_selector_kinds={calendar_id: selector_kind},
         expand_recurring=True,
         timeout=timeout,
+        fail_on_total_failure=True,
     )
     conflicts: list[dict[str, Any]] = []
     for payload in payloads:
@@ -469,6 +484,7 @@ def surviving_recurring_occurrences(
     engine: CalendarReadEngine,
     window: CalendarWindow,
     calendar_ids: list[str],
+    calendar_selector_kinds: dict[str, str] | None,
     recurring_ids: list[str],
     timeout: int | None = None,
 ) -> dict[str, list[str]]:
@@ -486,6 +502,7 @@ def surviving_recurring_occurrences(
         engine=engine,
         window=window,
         calendar_ids=calendar_ids,
+        calendar_selector_kinds=calendar_selector_kinds,
         expand_recurring=True,
         event_ids=recurring_ids,
         timeout=timeout,
@@ -534,9 +551,8 @@ def validate_on_conflict(on_conflict: str) -> None:
 
 def render_events_text(payload: dict[str, Any]) -> str:
     """Compact human-readable rendering for event-list payloads."""
-    lines: list[str] = []
     events = payload.get("events", [])
-    lines.append(f"{len(events)} event(s) [engine: {payload.get('engine', '?')}]")
+    lines = [f"{len(events)} event(s) [engine: {payload.get('engine', '?')}]"]
     for event in events:
         marker = " (all-day)" if event.get("all_day") else ""
         recurring = " [recurring]" if event.get("recurring") else ""

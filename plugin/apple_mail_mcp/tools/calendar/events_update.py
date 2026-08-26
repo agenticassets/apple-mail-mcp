@@ -211,6 +211,9 @@ def update_event(
             engine=read_engine,
             window=window,
             calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+            calendar_selector_kinds={
+                str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes
+            },
             expand_recurring=False,
             include_detail=True,
             event_ids=[target_id],
@@ -231,6 +234,14 @@ def update_event(
         target_calendar_id = str(current.get("calendar_id") or "")
         if not target_calendar_id:
             raise ToolError(code="CALENDAR_NOT_FOUND", message="The event did not retain its calendar_id.")
+        target_selector_kind = next(
+            (
+                str(scope.get("id_kind") or "name")
+                for scope in scopes
+                if str(scope.get("calendar_id")) == target_calendar_id
+            ),
+            "calendar_object_reference",
+        )
         stored_start = datetime.fromisoformat(str(current["start"]))
         stored_end = datetime.fromisoformat(str(current["end"])) if current.get("end") else stored_start
 
@@ -274,6 +285,7 @@ def update_event(
         if (new_start is not None or new_end is not None) and on_conflict != "allow":
             conflicts = find_conflicts(
                 calendar_id=target_calendar_id,
+                selector_kind=target_selector_kind,
                 start=effective_start,
                 end=effective_end,
                 timezone_name=timezone,
@@ -372,6 +384,7 @@ def update_event(
             window=write_window,
             set_lines=set_lines,
             timeout=timeout,
+            selector_kind=target_selector_kind,
         )
     except AppleScriptTimeout:
         return timeout_error("update_event", timeout)

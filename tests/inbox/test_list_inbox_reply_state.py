@@ -33,6 +33,8 @@ def _fake_runner(main_raw: str, draft_raw: str | None = None, calls: list[str] |
             calls.append(script)
         if "draftsMailbox" in script:
             return draft_raw if draft_raw is not None else "COUNT|||0\nTOTAL|||0"
+        if "sentMailbox" in script:
+            return "SCANNED|||0\nTOTAL|||0"
         return main_raw
 
     return runner
@@ -56,6 +58,27 @@ class ListInboxWasRepliedAlwaysPresentTests(unittest.TestCase):
         # has_draft is still present (null) even with the scan skipped.
         self.assertTrue(all(e["has_draft"] is None for e in response["emails"]))
         self.assertEqual(response["draft_scan"]["status"], "skipped")
+
+    def test_json_sent_header_match_sets_composite_reply_state(self):
+        raw = "Budget|||alice@example.com|||Date|||false|||Work|||101|||false|||<budget@example.com>"
+
+        def runner(script: str, timeout: int | None = None) -> str:
+            if "sentMailbox" in script:
+                return "REPLY|||<budget@example.com>\nSCANNED|||1\nTOTAL|||1"
+            return raw
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=runner):
+            response = _run(
+                inbox_tools.list_inbox_emails(
+                    account="Work", max_emails=10, output_format="json", include_draft_state=False
+                )
+            )
+
+        row = response["emails"][0]
+        self.assertFalse(row["mail_was_replied_to"])
+        self.assertTrue(row["has_sent_reply"])
+        self.assertTrue(row["reply_state"])
+        self.assertEqual(response["sent_reply_scan"]["status"], "ok")
 
     def test_text_mode_tags_replied_rows(self):
         # Matches the real `_build_list_inbox_text_script` per-message
@@ -90,7 +113,7 @@ class ListInboxWasRepliedAlwaysPresentTests(unittest.TestCase):
 
 class ListInboxHasDraftTests(unittest.TestCase):
     def test_json_has_draft_true_for_matching_draft(self):
-        main_raw = "Budget|||alice@example.com|||Date|||false|||Work|||101|||false"
+        main_raw = "Budget|||alice@example.com|||Date|||false|||Work|||101|||false|||<budget@example.com>"
         draft_raw = "DRAFT|||Re: Budget|||alice@example.com|||2026-07-09T10:00:00|||\nCOUNT|||1\nTOTAL|||1"
         with patch(
             "apple_mail_mcp.tools.inbox.run_applescript",
@@ -137,7 +160,7 @@ class ListInboxHasDraftTests(unittest.TestCase):
         self.assertEqual(subjects, ["Other"])
 
     def test_include_draft_state_false_skips_scan_entirely(self):
-        main_raw = "Budget|||alice@example.com|||Date|||false|||Work|||101|||false"
+        main_raw = "Budget|||alice@example.com|||Date|||false|||Work|||101|||false|||<budget@example.com>"
         calls: list[str] = []
         with patch(
             "apple_mail_mcp.tools.inbox.run_applescript",
@@ -149,7 +172,7 @@ class ListInboxHasDraftTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(len(calls), 1, "no Drafts-snapshot AppleScript call should run")
+        self.assertEqual(len(calls), 2, "only inbox and Sent-reply scans should run; no Drafts scan")
         self.assertIsNone(response["emails"][0]["has_draft"])
         self.assertEqual(response["draft_scan"]["status"], "skipped")
         # exclude_drafted never excludes on a null has_draft.

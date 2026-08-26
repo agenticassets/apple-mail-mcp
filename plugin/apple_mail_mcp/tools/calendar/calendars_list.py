@@ -4,6 +4,7 @@ from typing import Any
 
 from apple_mail_mcp import server as _server
 from apple_mail_mcp.backend.base import ToolError
+from apple_mail_mcp.calendar_core import resolve_calendar_selector
 from apple_mail_mcp.core import AppleScriptTimeout, inject_preferences
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import calendar as calendar_tools
@@ -57,9 +58,22 @@ def list_calendars(output_format: str = "json", timeout: int | None = None) -> s
     except ToolError as exc:
         return error_json(exc)
 
+    default_id_getter = getattr(engine, "default_calendar_id", None)
+    engine_default_id = default_id_getter() if callable(default_id_getter) else None
     default_calendar = _server.DEFAULT_CALENDAR or engine.default_calendar_name()
+    default_calendar_id = engine_default_id
+    if _server.DEFAULT_CALENDAR:
+        try:
+            default_calendar_id = str(resolve_calendar_selector(_server.DEFAULT_CALENDAR, calendars)["calendar_id"])
+        except ToolError:
+            default_calendar_id = None
+    elif default_calendar and not default_calendar_id:
+        try:
+            default_calendar_id = str(resolve_calendar_selector(default_calendar, calendars)["calendar_id"])
+        except ToolError:
+            default_calendar_id = None
     for cal in calendars:
-        cal["is_default"] = bool(default_calendar) and cal.get("name") == default_calendar
+        cal["is_default"] = bool(default_calendar_id) and cal.get("calendar_id") == default_calendar_id
     available, reason = calendar_tools.eventkit_status()
     payload: dict[str, Any] = {
         "calendars": calendars,

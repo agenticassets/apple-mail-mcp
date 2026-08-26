@@ -31,6 +31,30 @@ _RETURN_ROWS = """
 """
 
 
+def _calendar_name_guard(calendar_id: str) -> str:
+    """Require one live exact-name match without retaining a delete-blocking reference."""
+    safe = escape_applescript(calendar_id)
+    return f'''set matchingCalendars to every calendar whose name is "{safe}"
+            if (count of matchingCalendars) is 0 then error "CALENDAR_NOT_FOUND"
+            if (count of matchingCalendars) is greater than 1 then error "AMBIGUOUS_CALENDAR_SELECTOR"'''
+
+
+def _calendar_target_line(calendar_id: str, selector_kind: str) -> str:
+    """Return a safe Calendar.app object selector for a resolved calendar."""
+    safe = escape_applescript(calendar_id)
+    if selector_kind == "name":
+        return _calendar_name_guard(calendar_id) + "\n            set targetCal to item 1 of matchingCalendars"
+    return f'set targetCal to calendar id "{safe}"'
+
+
+def _calendar_target_expression(calendar_id: str, selector_kind: str) -> str:
+    """Return the inline selector required by Calendar.app calendar deletion."""
+    safe = escape_applescript(calendar_id)
+    if selector_kind == "name":
+        return f'first calendar whose name is "{safe}"'
+    return f'calendar id "{safe}"'
+
+
 def applescript_date_block(var_name: str, dt: datetime, *, all_day: bool = False) -> str:
     """Emit integer-component AppleScript date construction for an aware datetime.
 
@@ -127,31 +151,60 @@ def _event_row_block(*, include_detail: bool) -> str:
                 end try"""
 
 
-def list_calendars_script(*, timeout_seconds: int) -> str:
-    """List every calendar as ``CAL`` rows keyed by its stable identifier."""
+def list_calendar_reference_ids_script(*, timeout_seconds: int) -> str:
+    """Return Calendar.app's stable object references without reading properties."""
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
-        set outputRows to {{}}
-        repeat with aCal in calendars
+        get calendars
+    end timeout
+end tell"""
+
+
+def _calendar_row_block(*, calendar_id: str | None = None) -> str:
+    target = "aCal"
+    uid = ""
+    if calendar_id is not None:
+        safe = escape_applescript(calendar_id)
+        target = "targetCal"
+        uid = safe
+        prefix = f'''        try
+            set targetCal to calendar id "{safe}"
+'''
+        suffix = f"""        on error errMsg
+            set end of outputRows to "ERROR_CALENDAR|||{safe}|||" & errMsg
+        end try"""
+    else:
+        prefix = """        repeat with aCal in calendars
             try
-                set calUid to ""
-                try
-                    set calUid to calendarIdentifier of aCal
-                end try
-                set calName to name of aCal
-                set calWritable to (writable of aCal) as string
+"""
+        suffix = """            on error errMsg
+                set end of outputRows to "ERROR_CALENDAR|||unknown|||" & errMsg
+            end try
+        end repeat"""
+    return f'''{prefix}                set calUid to "{uid}"
+                set calName to name of {target}
+                set calWritable to (writable of {target}) as string
                 set calDesc to ""
                 try
-                    set calDesc to description of aCal
+                    set calDesc to description of {target}
                     if calDesc is missing value then set calDesc to ""
                 end try
                 {sanitize_pipe_delimited_field("calName")}
                 {sanitize_pipe_delimited_field("calDesc")}
                 set end of outputRows to "CAL|||" & calUid & "|||" & calName & "|||" & calWritable & "|||" & calDesc
-            on error errMsg
-                set end of outputRows to "ERROR_CALENDAR|||unknown|||" & errMsg
-            end try
-        end repeat
+{suffix}'''
+
+
+def list_calendars_script(*, timeout_seconds: int, calendar_ids: list[str] | None = None) -> str:
+    """List calendars, binding stable object ids when reference discovery worked."""
+    if calendar_ids:
+        rows = "\n".join(_calendar_row_block(calendar_id=calendar_id) for calendar_id in calendar_ids)
+    else:
+        rows = _calendar_row_block()
+    return f"""tell application "Calendar"
+    with timeout of {int(timeout_seconds)} seconds
+        set outputRows to {{}}
+{rows}
 {_RETURN_ROWS}
     end timeout
 end tell
@@ -165,6 +218,7 @@ def fetch_window_events_script(
     end_block: str,
     scan_cap: int,
     timeout_seconds: int,
+    selector_kind: str = "calendar_object_reference",
     uid_condition: str = "",
     include_detail: bool = False,
 ) -> str:
@@ -175,15 +229,16 @@ def fetch_window_events_script(
     ``windowStart``/``windowEnd``. An optional *uid_condition* (from
     ``build_uid_condition``) narrows the same bounded predicate to exact ids.
     """
-    calendar_id = escape_applescript(calendar_id)
+    safe_calendar_id = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     uid_clause = f" and {uid_condition}" if uid_condition else ""
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         set outputRows to {{}}
         try
-            set targetCal to first calendar whose calendarIdentifier is "{calendar_id}"
+            {target_line}
             set targetCalName to name of targetCal
-            set targetCalId to calendarIdentifier of targetCal
+            set targetCalId to "{safe_calendar_id}"
             {sanitize_pipe_delimited_field("targetCalName")}
             {start_block}
             {end_block}
@@ -196,7 +251,7 @@ def fetch_window_events_script(
 {_event_row_block(include_detail=include_detail)}
             end repeat
         on error errMsg
-            set end of outputRows to "ERROR_EVENT|||" & errMsg
+            set end of outputRows to "ERROR_CALENDAR|||" & errMsg
         end try
 {_RETURN_ROWS}
     end timeout
@@ -211,6 +266,7 @@ def fetch_recurring_masters_script(
     end_block: str,
     scan_cap: int,
     timeout_seconds: int,
+    selector_kind: str = "calendar_object_reference",
     include_detail: bool = False,
 ) -> str:
     """Bounded lookback fetch of recurring masters.
@@ -218,14 +274,15 @@ def fetch_recurring_masters_script(
     The window predicate stays date-bounded on both ends; the recurrence
     filter runs inside the repeat loop, never in the ``whose`` predicate.
     """
-    calendar_id = escape_applescript(calendar_id)
+    safe_calendar_id = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         set outputRows to {{}}
         try
-            set targetCal to first calendar whose calendarIdentifier is "{calendar_id}"
+            {target_line}
             set targetCalName to name of targetCal
-            set targetCalId to calendarIdentifier of targetCal
+            set targetCalId to "{safe_calendar_id}"
             {sanitize_pipe_delimited_field("targetCalName")}
             {start_block}
             {end_block}
@@ -241,7 +298,7 @@ def fetch_recurring_masters_script(
                 end if
             end repeat
         on error errMsg
-            set end of outputRows to "ERROR_EVENT|||" & errMsg
+            set end of outputRows to "ERROR_CALENDAR|||" & errMsg
         end try
 {_RETURN_ROWS}
     end timeout
@@ -249,16 +306,19 @@ end tell
 {_FMT_DATE_HANDLER}"""
 
 
-def count_events_script(*, calendar_id: str, timeout_seconds: int) -> str:
+def count_events_script(
+    *, calendar_id: str, timeout_seconds: int, selector_kind: str = "calendar_object_reference"
+) -> str:
     """Count events on one calendar (used by the calendar-delete preview)."""
-    calendar_id = escape_applescript(calendar_id)
+    safe_calendar_id = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         try
-            set targetCal to first calendar whose calendarIdentifier is "{calendar_id}"
+            {target_line}
             return "COUNT|||" & ((count of events of targetCal) as string)
         on error errMsg
-            return "ERROR_CALENDAR|||{calendar_id}|||" & errMsg
+            return "ERROR_CALENDAR|||{safe_calendar_id}|||" & errMsg
         end try
     end timeout
 end tell"""
@@ -271,4 +331,5 @@ __all__ = [
     "fetch_recurring_masters_script",
     "fetch_window_events_script",
     "list_calendars_script",
+    "list_calendar_reference_ids_script",
 ]

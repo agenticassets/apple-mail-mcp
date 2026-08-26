@@ -141,6 +141,9 @@ def delete_events(
             engine=read_engine,
             window=window,
             calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+            calendar_selector_kinds={
+                str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes
+            },
             expand_recurring=False,
             event_ids=ids,
             timeout=timeout,
@@ -198,6 +201,7 @@ def delete_events(
         deleted: list[dict[str, str]] = []
         delete_errors: list[str] = []
         ids_by_calendar: dict[str, list[str]] = {}
+        selector_kinds = {str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes}
         for event_id in ids:
             ids_by_calendar.setdefault(str(by_id[event_id].get("calendar_id")), []).append(event_id)
         for calendar_id, calendar_ids in ids_by_calendar.items():
@@ -206,6 +210,7 @@ def delete_events(
                 event_ids=calendar_ids,
                 window=write_window,
                 timeout=timeout,
+                selector_kind=selector_kinds.get(calendar_id, "calendar_object_reference"),
             )
             deleted.extend(chunk_deleted)
             for row in chunk_deleted:
@@ -220,6 +225,7 @@ def delete_events(
                 engine=read_engine,
                 window=write_window,
                 calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+                calendar_selector_kinds=selector_kinds,
                 recurring_ids=recurring_targets,
                 timeout=timeout,
             )

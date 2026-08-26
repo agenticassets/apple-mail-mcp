@@ -24,8 +24,8 @@ merge, skip counting, priority labeling) since that logic is specific to
 from dataclasses import dataclass
 from typing import Any
 
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.core.reply_state import DraftsSnapshot, resolve_has_draft
-from apple_mail_mcp.tools.smart_inbox.helpers import _normalize_message_id
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ def _priority_label(*, has_question: bool, is_flagged: bool, replied: bool, has_
 def _classify_needs_response_rows(
     rows: list[_NeedsResponseRow],
     *,
-    replied_ids: set[str],
+    sent_reply_snapshot: SentReplySnapshot | None,
     include_already_replied: bool,
     include_drafted: bool,
     drafts_snapshot: DraftsSnapshot | None,
@@ -152,10 +152,17 @@ def _classify_needs_response_rows(
         if len(high) + len(normal) >= max_results:
             break
 
-        legacy_matched = bool(
-            row.internet_message_id and replied_ids and _normalize_message_id(row.internet_message_id) in replied_ids
+        has_sent_reply = (
+            sent_reply_snapshot.matches(row.internet_message_id) if sent_reply_snapshot is not None else None
         )
-        replied = row.was_replied_to or legacy_matched
+        reply_state: bool | None
+        if row.was_replied_to or has_sent_reply is True:
+            reply_state = True
+        elif has_sent_reply is False:
+            reply_state = False
+        else:
+            reply_state = None
+        replied = reply_state is True
 
         has_draft = resolve_has_draft(
             drafts_snapshot,
@@ -188,6 +195,9 @@ def _classify_needs_response_rows(
             "priority": priority,
             "already_replied": replied,
             "was_replied_to": row.was_replied_to,
+            "mail_was_replied_to": row.was_replied_to,
+            "has_sent_reply": has_sent_reply,
+            "reply_state": reply_state,
             "has_draft": has_draft,
             "message_id": row.mail_app_id,
             "internet_message_id": row.internet_message_id,

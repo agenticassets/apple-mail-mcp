@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import apple_mail_mcp.server as server
 import pytest
+from apple_mail_mcp.backend.base import ToolError
 from apple_mail_mcp.tools.calendar import create_event
 
 from .conftest import HOST_TZ, FakeReadEngine, raw_event
@@ -152,6 +153,30 @@ class TestConflicts:
         assert payload["has_conflicts"] is False
         assert read.fetch_calls == []  # no conflict fetch ran
         assert write.created
+
+    def test_conflict_scan_total_failure_blocks_create(self, fake_engines):
+        class _FailingReadEngine(FakeReadEngine):
+            def fetch_window(self, *args, **kwargs):
+                raise ToolError(code="CALENDAR_NOT_FOUND", message="synthetic stale calendar")
+
+        _read, write = fake_engines(read=_FailingReadEngine())
+
+        payload = _run()
+
+        assert payload["code"] == "CALENDAR_READ_FAILED"
+        assert write.created == []
+
+    def test_recurring_conflict_scan_failure_blocks_create(self, fake_engines):
+        class _FailingRecurringEngine(FakeReadEngine):
+            def fetch_recurring_masters(self, *args, **kwargs):
+                raise ToolError(code="CALENDAR_READ_FAILED", message="synthetic recurring read failure")
+
+        _read, write = fake_engines(read=_FailingRecurringEngine())
+
+        payload = _run()
+
+        assert payload["code"] == "CALENDAR_READ_FAILED"
+        assert write.created == []
 
 
 class TestAttendeeGating:

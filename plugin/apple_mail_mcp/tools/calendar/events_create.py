@@ -170,6 +170,7 @@ def create_event(
         if on_conflict != "allow":
             conflicts = find_conflicts(
                 calendar_id=str(target["calendar_id"]),
+                selector_kind=str(target.get("id_kind") or "name"),
                 start=start_dt,
                 end=end_dt,
                 timezone_name=timezone,
@@ -200,6 +201,7 @@ def create_event(
             alarms_minutes_before=validated_alarms,
             attendees=validated_attendees,
             timeout=timeout,
+            selector_kind=str(target.get("id_kind") or "name"),
         )
     except AppleScriptTimeout:
         return timeout_error("create_event", timeout)

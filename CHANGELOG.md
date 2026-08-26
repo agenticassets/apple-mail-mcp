@@ -5,6 +5,25 @@ here. The plugin/MCPB/marketplace versions track this file.
 
 ## Unreleased
 
+## 3.12.1 - 2026-08-26
+
+- **Calendar.app reads use stable object references on hosts where
+  `calendarIdentifier` fails.** Calendar listing now recovers opaque IDs from
+  Calendar object references, passes those selectors through bounded reads and
+  writes, and uses exact-name fallback only when the live name is unique.
+  Duplicate identifier-less names fail closed, explicit read failures are
+  structured, and EventKit listings expose source metadata when available.
+
+- **Reply-state JSON now distinguishes Mail metadata from verified Sent
+  threading.** Primary read/triage rows retain `was_replied_to` for
+  compatibility and duplicate that raw, read-only Mail property as
+  `mail_was_replied_to`. They also expose nullable `has_sent_reply` and a
+  nullable composite `reply_state`. Exact In-Reply-To/References matches are
+  true even when the bounded Sent scan is partial; a nonmatch is false only
+  when the scan is complete, otherwise null. `sent_reply_scan` reports
+  status/scanned/total/truncated/errors. This improves MCP triage and does not
+  set Mail's answered flag or promise that Mail's reply arrow will appear.
+
 ## 3.12.0 - 2026-08-25
 
 Two lanes. The first is the directory listing work: metadata, documentation,

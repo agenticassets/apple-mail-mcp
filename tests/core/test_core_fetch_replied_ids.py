@@ -16,31 +16,35 @@ import unittest
 from unittest.mock import patch
 
 import pytest
-
-from apple_mail_mcp.core import fetch_replied_ids
-
+from apple_mail_mcp.core import SentReplySnapshot, fetch_replied_ids, fetch_sent_reply_snapshot
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fake_runner_raising(exc: Exception):
     """Return a runner callable that always raises *exc*."""
+
     def _runner(script, timeout=60):
         raise exc
+
     return _runner
 
 
 def _fake_runner_returning(output: str):
     """Return a runner callable that always returns *output*."""
+
     def _runner(script, timeout=60):
         return output
+
     return _runner
 
 
 # ---------------------------------------------------------------------------
 # Tests: non-timeout exceptions must log a WARNING and return empty set
 # ---------------------------------------------------------------------------
+
 
 class FetchRepliedIdsNonTimeoutExceptionTests(unittest.TestCase):
     """fetch_replied_ids must log WARNING for every non-AppleScriptTimeout error."""
@@ -56,9 +60,7 @@ class FetchRepliedIdsNonTimeoutExceptionTests(unittest.TestCase):
         self.assertIsInstance(result, set)
         self.assertEqual(result, set(), f"Expected empty set on {type(exc).__name__}")
 
-        warning_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
-        ]
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         self.assertTrue(
             warning_records,
             f"Expected at least one WARNING log when {type(exc).__name__} is raised, got none",
@@ -138,6 +140,7 @@ def test_does_not_raise_on_exception(caplog):
 # Tests: timeout must NOT log a warning (handled separately, silently)
 # ---------------------------------------------------------------------------
 
+
 def test_timeout_returns_empty_set_without_warning(caplog):
     """AppleScriptTimeout should still return empty set but NOT log a warning."""
     from apple_mail_mcp.core import AppleScriptTimeout
@@ -154,6 +157,7 @@ def test_timeout_returns_empty_set_without_warning(caplog):
 # ---------------------------------------------------------------------------
 # Tests: happy path must return parsed IDs with NO warning
 # ---------------------------------------------------------------------------
+
 
 def test_happy_path_returns_parsed_ids(caplog):
     output = "<msg-001@example.com>\n<msg-002@example.com>\n"
@@ -186,3 +190,43 @@ def test_happy_path_empty_output_returns_empty_set(caplog):
     assert result == set()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert not warnings
+
+
+def test_sent_reply_snapshot_complete_nonmatch_is_false():
+    snapshot = fetch_sent_reply_snapshot(
+        "Work",
+        runner=_fake_runner_returning("REPLY|||<matched@example.com>\nSCANNED|||2\nTOTAL|||2"),
+    )
+    assert snapshot.status == "ok"
+    assert snapshot.scanned == 2
+    assert snapshot.total == 2
+    assert snapshot.truncated is False
+    assert snapshot.matches("<other@example.com>") is False
+
+
+def test_sent_reply_snapshot_match_survives_truncation():
+    snapshot = fetch_sent_reply_snapshot(
+        "Work",
+        runner=_fake_runner_returning("REPLY|||<matched@example.com>\nSCANNED|||10\nTOTAL|||25"),
+    )
+    assert snapshot.truncated is True
+    assert snapshot.matches("matched@example.com") is True
+    assert snapshot.matches("<other@example.com>") is None
+
+
+def test_sent_reply_snapshot_error_nonmatch_is_unknown():
+    snapshot = fetch_sent_reply_snapshot(
+        "Work",
+        runner=_fake_runner_returning(
+            "REPLY|||<matched@example.com>\nERROR|||one header failed\nSCANNED|||2\nTOTAL|||2"
+        ),
+    )
+    assert snapshot.status == "error"
+    assert snapshot.errors == ("one header failed",)
+    assert snapshot.matches("<matched@example.com>") is True
+    assert snapshot.matches("<other@example.com>") is None
+
+
+def test_sent_reply_snapshot_missing_id_is_unknown_even_when_complete():
+    snapshot = SentReplySnapshot(status="ok", scanned=0, total=0)
+    assert snapshot.matches(None) is None

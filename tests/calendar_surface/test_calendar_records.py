@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from apple_mail_mcp.calendar_core.records import (
     event_payload,
+    parse_calendar_reference_ids,
     parse_calendar_rows,
     parse_event_rows,
     parse_numeric_datetime,
@@ -42,11 +43,25 @@ class TestParseCalendarRows:
         calendars, errors = parse_calendar_rows(raw)
         assert errors == []
         assert calendars[0]["calendar_id"] == "CAL-A"
-        assert calendars[0]["id_kind"] == "calendarIdentifier"
+        assert calendars[0]["id_kind"] == "calendar_object_reference"
         assert calendars[0]["writable"] is True
         assert calendars[1]["calendar_id"] == "CAL-B"
-        assert calendars[1]["id_kind"] == "calendarIdentifier"
+        assert calendars[1]["id_kind"] == "calendar_object_reference"
         assert calendars[1]["writable"] is False
+
+    def test_parses_stable_calendar_object_references(self):
+        identifiers, errors = parse_calendar_reference_ids("calendar id CAL-A, calendar id CAL-B")
+
+        assert identifiers == ["CAL-A", "CAL-B"]
+        assert errors == []
+
+    def test_missing_reference_uses_diagnostic_name_fallback(self):
+        calendars, errors = parse_calendar_rows("CAL||||||Work|||true|||")
+
+        assert errors == []
+        assert calendars[0]["calendar_id"] == "Work"
+        assert calendars[0]["id_kind"] == "name"
+        assert calendars[0]["identifier_diagnostic"] == "exact_name_fallback"
 
     def test_error_rows_diverted(self):
         calendars, errors = parse_calendar_rows("ERROR_CALENDAR|||Work|||boom")

@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import unittest
 
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.core.reply_state import DraftsSnapshot
 from apple_mail_mcp.tools.reply_state_wiring import (
     MAX_DRAFT_SNAPSHOT_ACCOUNTS,
+    MAX_SENT_REPLY_SNAPSHOT_ACCOUNTS,
     annotate_rows_with_reply_state,
     build_draft_scan_status,
+    build_sent_reply_scan_status,
 )
 
 
@@ -74,6 +77,107 @@ class BuildDraftScanStatusTests(unittest.TestCase):
 
 
 class AnnotateRowsWithReplyStateTests(unittest.TestCase):
+    def test_composite_reply_state_truth_table(self):
+        rows = [
+            {"account": "Work", "internet_message_id": "<native@example.com>", "was_replied_to": True},
+            {"account": "Work", "internet_message_id": "<header@example.com>", "was_replied_to": False},
+            {"account": "Work", "internet_message_id": "<untouched@example.com>", "was_replied_to": False},
+        ]
+        sent_cache = {
+            "Work": SentReplySnapshot(
+                status="ok",
+                replied_ids=frozenset({"<header@example.com>"}),
+                scanned=3,
+                total=3,
+            )
+        }
+        annotate_rows_with_reply_state(
+            rows,
+            runner=_drafts_runner({}),
+            timeout=30,
+            include_draft_state=False,
+            include_sent_reply_state=True,
+            sent_snapshots=sent_cache,
+        )
+        self.assertEqual([row["mail_was_replied_to"] for row in rows], [True, False, False])
+        self.assertEqual([row["has_sent_reply"] for row in rows], [False, True, False])
+        self.assertEqual([row["reply_state"] for row in rows], [True, True, False])
+        self.assertEqual([row["was_replied_to"] for row in rows], [True, False, False])
+
+    def test_truncated_sent_nonmatch_is_unknown(self):
+        rows = [{"account": "Work", "internet_message_id": "<unseen@example.com>", "was_replied_to": False}]
+        sent_cache = {"Work": SentReplySnapshot(status="ok", scanned=10, total=20, truncated=True)}
+        annotate_rows_with_reply_state(
+            rows,
+            runner=_drafts_runner({}),
+            timeout=30,
+            include_draft_state=False,
+            include_sent_reply_state=True,
+            sent_snapshots=sent_cache,
+        )
+        self.assertIsNone(rows[0]["has_sent_reply"])
+        self.assertIsNone(rows[0]["reply_state"])
+
+    def test_sent_reply_scan_status_includes_errors(self):
+        status = build_sent_reply_scan_status(
+            {"Work": SentReplySnapshot(status="error", scanned=1, total=2, truncated=True, errors=("failed",))}
+        )
+        self.assertEqual(status["status"], "error")
+        self.assertEqual(status["scanned"], 1)
+        self.assertEqual(status["total"], 2)
+        self.assertTrue(status["truncated"])
+        self.assertEqual(status["errors"], ["Work: failed"])
+
+    def test_sent_reply_account_cap_reports_partial_coverage(self):
+        calls: list[str] = []
+        accounts = [f"Acct{i}" for i in range(6)]
+        rows = [
+            {
+                "account": account,
+                "internet_message_id": f"<{account.lower()}@example.com>",
+                "was_replied_to": False,
+            }
+            for account in accounts
+        ]
+        sent_cache: dict[str, SentReplySnapshot] = {}
+        requested: list[str] = []
+        annotate_rows_with_reply_state(
+            rows,
+            runner=_drafts_runner({account: "SCANNED|||0\nTOTAL|||0" for account in accounts}, calls),
+            timeout=60,
+            include_draft_state=False,
+            include_sent_reply_state=True,
+            sent_snapshots=sent_cache,
+            sent_accounts_requested=requested,
+        )
+
+        status = build_sent_reply_scan_status(sent_cache, requested)
+        self.assertEqual(len(sent_cache), MAX_SENT_REPLY_SNAPSHOT_ACCOUNTS)
+        self.assertEqual(status["status"], "partial")
+        self.assertTrue(status["truncated"])
+        self.assertTrue(status["account_limit_reached"])
+        self.assertEqual(status["skipped_account_count"], 1)
+        self.assertEqual(status["skipped_accounts"], ["Acct5"])
+        self.assertIsNone(rows[-1]["has_sent_reply"])
+        self.assertEqual(len(calls), MAX_SENT_REPLY_SNAPSHOT_ACCOUNTS)
+
+    def test_sent_scan_skips_rows_without_usable_ids_or_with_native_reply(self):
+        calls: list[str] = []
+        rows = [
+            {"account": "Work", "internet_message_id": "", "was_replied_to": False},
+            {"account": "Work", "internet_message_id": "<native@example.com>", "was_replied_to": True},
+        ]
+        annotate_rows_with_reply_state(
+            rows,
+            runner=_drafts_runner({}, calls),
+            timeout=60,
+            include_draft_state=False,
+            include_sent_reply_state=True,
+        )
+        self.assertEqual(calls, [])
+        self.assertIsNone(rows[0]["reply_state"])
+        self.assertTrue(rows[1]["reply_state"])
+
     def test_include_draft_state_false_sets_null_and_never_calls_runner(self):
         calls: list[str] = []
         rows = [{"account": "Work", "subject": "Hi", "sender": "a@b.com", "date": None}]

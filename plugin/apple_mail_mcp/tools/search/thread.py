@@ -23,8 +23,8 @@ from apple_mail_mcp.core import (
 )
 from apple_mail_mcp.core.reply_state import was_replied_fragment
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
+from apple_mail_mcp.tools import reply_state_wiring as _reply_state
 from apple_mail_mcp.tools import search
-from apple_mail_mcp.tools.reply_state_wiring import annotate_rows_with_reply_state, build_draft_scan_status
 from apple_mail_mcp.tools.search.by_id import _fetch_email_record_by_id
 from apple_mail_mcp.tools.search.records import (
     _build_applescript_date,
@@ -159,12 +159,15 @@ def get_email_thread(
               entirely. Text output does not carry `has_draft` (thread text
               is rendered inside AppleScript, not from parsed rows); it still
               shows the native `[REPLIED]` marker, which needs no Drafts scan.
+              JSON mode independently adds one short bounded Sent-header scan
+              per relevant account for composite reply state.
 
       Returns:
           Formatted thread view (text mode prefixes replied messages with
           `[REPLIED]`), or JSON with items, ids, headers, anchor, strategy,
-          and draft_scan. Every JSON item carries `was_replied_to` (bool,
-          always present) and `has_draft` (true/false/null, governed by
+          and reply/draft scan diagnostics. Every JSON item carries raw
+          `was_replied_to` / `mail_was_replied_to`, nullable `has_sent_reply`
+          and `reply_state`, plus `has_draft` (true/false/null, governed by
           `include_draft_state`). `draft_scan` is `{"status": "ok" | "error" |
           "skipped", "scanned": N, "accounts": [...], "error"?: "..."}`.
           A scan that failed inside AppleScript adds `error` and `errors` to
@@ -516,14 +519,18 @@ def get_email_thread(
             # (text mode already returns the raw error string below).
             script_error = _script_error_message(result)
         records, mailbox_errors = _parse_search_records(parse_result)
-        snapshots = annotate_rows_with_reply_state(
+        sent_snapshots, sent_accounts_requested = _reply_state.new_sent_reply_scan()
+        snapshots = _reply_state.annotate_rows_with_reply_state(
             records,
             runner=search.run_applescript,
             timeout=effective_timeout,
             include_draft_state=include_draft_state,
+            include_sent_reply_state=True,
             date_field="received_date",
+            sent_snapshots=sent_snapshots,
+            sent_accounts_requested=sent_accounts_requested,
         )
-        draft_scan = build_draft_scan_status(snapshots)
+        draft_scan = _reply_state.build_draft_scan_status(snapshots)
         rendered = len(records)
         if matched_count is None:
             matched_count = rendered
@@ -551,6 +558,7 @@ def get_email_thread(
             "recent_days_applied": effective_recent_days,
             "max_messages": max_messages,
             "draft_scan": draft_scan,
+            "sent_reply_scan": _reply_state.build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
         }
         if script_error is not None:
             payload["error"] = script_error

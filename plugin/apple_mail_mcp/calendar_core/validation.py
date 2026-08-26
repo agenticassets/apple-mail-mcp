@@ -95,6 +95,18 @@ def resolve_calendar_selector(query: str, calendars: list[dict[str, Any]]) -> di
         for calendar in name_matches
     ]
     if len(name_matches) > 1:
+        if all(str(calendar.get("id_kind")) == "name" for calendar in name_matches):
+            raise ToolError(
+                code="CALENDAR_IDENTIFIER_UNAVAILABLE",
+                message=(
+                    f"Calendar name {query!r} identifies {len(name_matches)} calendars, but Calendar.app "
+                    "did not expose stable object-reference ids for this listing."
+                ),
+                remediation={
+                    "preferred": "Enable the EventKit read engine and call list_calendars again.",
+                    "fallback": "Rename one calendar in Calendar.app so the exact display name is unique.",
+                },
+            )
         raise ToolError(
             code="AMBIGUOUS_CALENDAR_SELECTOR",
             message=f"Calendar name {query!r} identifies {len(name_matches)} calendars.",

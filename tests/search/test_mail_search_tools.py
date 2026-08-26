@@ -117,6 +117,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _empty_sent_reply_snapshot(script: str) -> str | None:
+    """Return a complete empty Sent snapshot for tests not exercising it."""
+    if "sentMailbox" in script:
+        return "SCANNED|||0\nTOTAL|||0"
+    return None
+
+
 def _clear_default_mail_account():
     """Multi-account dispatch tests must not inherit DEFAULT_MAIL_ACCOUNT from env."""
     from apple_mail_mcp import server as _srv
@@ -129,6 +136,9 @@ class SearchToolTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return "\n".join(
                 [
@@ -180,6 +190,9 @@ class SearchToolTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return _record_line(201, "Unread Ticket", is_read=False)
 
@@ -205,6 +218,9 @@ class SearchToolTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return _record_line(
                 301,
@@ -452,6 +468,9 @@ class SearchToolTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return _record_line(
                 12345,
@@ -517,6 +536,9 @@ class SearchToolTests(unittest.TestCase):
 
         def fake_run(script, timeout=120):
             captured.append(script)
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             return "\n".join(
                 [
                     _record_line(202, "Second", sender="sender2@example.com"),
@@ -539,7 +561,7 @@ class SearchToolTests(unittest.TestCase):
         self.assertEqual([item["message_id"] for item in payload["items"]], ["101", "202"])
         self.assertFalse(payload["include_content"])
         self.assertEqual(payload["chunk_size"], 50)
-        self.assertEqual(len(captured), 1)
+        self.assertEqual(len(captured), 2)
         self.assertIn("whose id is 101 or id is 202 or id is 303", captured[0])
         self.assertNotIn("set msgContent to content of aMessage", captured[0])
 
@@ -1695,6 +1717,9 @@ class NewFieldsTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return self._record_line_14(12345, "Test")
 
@@ -1769,6 +1794,9 @@ class NewFieldsTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return ""
 
@@ -2149,7 +2177,7 @@ class ReplyStateAnnotationTests(unittest.TestCase):
         return asyncio.run(coro)
 
     @staticmethod
-    def _route_drafts(drafts_raw, other_raw):
+    def _route_drafts(drafts_raw, other_raw, sent_raw="SCANNED|||0\nTOTAL|||0"):
         """Return (fake_run, calls) routing drafts-snapshot scripts to
         *drafts_raw* (detected via the ``"DRAFT|||"`` literal every
         ``build_drafts_snapshot_script`` output contains) and everything
@@ -2160,6 +2188,8 @@ class ReplyStateAnnotationTests(unittest.TestCase):
             calls.append(script)
             if '"DRAFT|||"' in script:
                 return drafts_raw
+            if "sentMailbox" in script:
+                return sent_raw
             return other_raw(script) if callable(other_raw) else other_raw
 
         return fake_run, calls
@@ -2239,8 +2269,8 @@ class ReplyStateAnnotationTests(unittest.TestCase):
             payload["draft_scan"]["accounts"],
             [{"account": "Work", "status": "ok", "scanned": 1, "total": 1, "truncated": False}],
         )
-        # One search call + one Drafts-snapshot call for the single account.
-        self.assertEqual(len(calls), 2)
+        # One search, one Drafts snapshot, and one Sent-reply snapshot.
+        self.assertEqual(len(calls), 3)
 
     def test_search_emails_include_draft_state_false_skips_drafts_scan(self):
         search_raw = _record_line_ws(1, "Something", sender="alice@example.com")
@@ -2262,8 +2292,70 @@ class ReplyStateAnnotationTests(unittest.TestCase):
             {"status": "skipped", "scanned": 0, "total": 0, "truncated": False, "accounts": []},
         )
         self.assertIsNone(payload["items"][0]["has_draft"])
-        # Only the one search call, no Drafts-snapshot call at all.
+        # Search + Sent-reply snapshot; no Drafts-snapshot call.
+        self.assertEqual(len(calls), 2)
+
+    def test_search_emails_json_sent_match_sets_composite_reply_state(self):
+        search_raw = _record_line_ws(
+            1,
+            "Budget Update",
+            internet_message_id="<budget@example.com>",
+            was_replied_to=False,
+        )
+        fake_run, _calls = self._route_drafts(
+            "COUNT|||0\nTOTAL|||0",
+            search_raw,
+            sent_raw="REPLY|||<budget@example.com>\nSCANNED|||1\nTOTAL|||1",
+        )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            result = self._run(
+                search_tools.search_emails(
+                    account="Work", recent_days=2.0, output_format="json", include_draft_state=False
+                )
+            )
+
+        payload = json.loads(result)
+        item = payload["items"][0]
+        self.assertFalse(item["mail_was_replied_to"])
+        self.assertTrue(item["has_sent_reply"])
+        self.assertTrue(item["reply_state"])
+
+    def test_search_emails_text_skips_sent_scan_unless_reply_option_consumes_it(self):
+        search_raw = _record_line_ws(1, "Budget Update", internet_message_id="<budget@example.com>")
+        fake_run, calls = self._route_drafts("COUNT|||0\nTOTAL|||0", search_raw)
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            self._run(
+                search_tools.search_emails(
+                    account="Work", recent_days=2.0, output_format="text", include_draft_state=False
+                )
+            )
+
         self.assertEqual(len(calls), 1)
+        self.assertNotIn("sentMailbox", calls[0])
+
+    def test_search_emails_text_reports_truncated_sent_evidence_when_filter_uses_it(self):
+        search_raw = _record_line_ws(1, "Budget Update", internet_message_id="<budget@example.com>")
+        fake_run, _calls = self._route_drafts(
+            "COUNT|||0\nTOTAL|||0",
+            search_raw,
+            sent_raw="SCANNED|||10\nTOTAL|||25",
+        )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            result = self._run(
+                search_tools.search_emails(
+                    account="Work",
+                    recent_days=2.0,
+                    output_format="text",
+                    exclude_replied=True,
+                    include_draft_state=False,
+                )
+            )
+
+        self.assertIn("WARNING: Sent reply-state scan examined 10 of 25", result)
+        self.assertIn("unknown reply state", result)
 
     def test_search_emails_draft_scan_error_fails_open(self):
         search_raw = _record_line_ws(1, "Something", sender="alice@example.com")
@@ -2336,7 +2428,7 @@ class ReplyStateAnnotationTests(unittest.TestCase):
         payload = json.loads(result)
         self.assertTrue(payload["item"]["has_draft"])
         self.assertEqual(payload["draft_scan"]["status"], "ok")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
     def test_get_email_by_id_include_draft_state_false_skips_scan(self):
         record = _record_line_ws(12345, "Something")
@@ -2353,7 +2445,48 @@ class ReplyStateAnnotationTests(unittest.TestCase):
         payload = json.loads(result)
         self.assertIsNone(payload["item"]["has_draft"])
         self.assertEqual(payload["draft_scan"]["status"], "skipped")
+        self.assertEqual(len(calls), 2)
+
+    def test_get_email_by_id_json_sent_match_sets_composite_reply_state(self):
+        record = _record_line_ws(
+            12345,
+            "Budget Update",
+            internet_message_id="<budget@example.com>",
+            was_replied_to=False,
+        )
+        fake_run, _calls = self._route_drafts(
+            "COUNT|||0\nTOTAL|||0",
+            record,
+            sent_raw="REPLY|||<budget@example.com>\nSCANNED|||1\nTOTAL|||1",
+        )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            result = search_tools.get_email_by_id(
+                account="Work",
+                message_id="12345",
+                output_format="json",
+                include_draft_state=False,
+            )
+
+        payload = json.loads(result)
+        item = payload["item"]
+        self.assertTrue(item["has_sent_reply"])
+        self.assertTrue(item["reply_state"])
+
+    def test_get_email_by_id_text_skips_sent_scan(self):
+        record = _record_line_ws(12345, "Budget Update", internet_message_id="<budget@example.com>")
+        fake_run, calls = self._route_drafts("COUNT|||0\nTOTAL|||0", record)
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.get_email_by_id(
+                account="Work",
+                message_id="12345",
+                output_format="text",
+                include_draft_state=False,
+            )
+
         self.assertEqual(len(calls), 1)
+        self.assertNotIn("sentMailbox", calls[0])
 
     def test_get_email_by_ids_annotates_has_draft_across_items(self):
         records_raw = "\n".join(
@@ -2388,8 +2521,8 @@ class ReplyStateAnnotationTests(unittest.TestCase):
         has_draft_by_subject = {item["subject"]: item["has_draft"] for item in payload["items"]}
         self.assertEqual(has_draft_by_subject, {"Budget Update": True, "Other Topic": False})
         self.assertEqual(payload["draft_scan"]["status"], "ok")
-        # One by-ids chunk call + one Drafts-snapshot call for "Work".
-        self.assertEqual(len(calls), 2)
+        # One by-ids chunk, one Drafts snapshot, and one Sent-reply snapshot.
+        self.assertEqual(len(calls), 3)
 
     # ------------------------------------------------------------------
     # get_email_thread: JSON-mode annotation, text-mode native marker only
@@ -2418,8 +2551,8 @@ class ReplyStateAnnotationTests(unittest.TestCase):
         payload = json.loads(result)
         self.assertTrue(payload["items"][0]["has_draft"])
         self.assertEqual(payload["draft_scan"]["status"], "ok")
-        # One thread-listing call + one Drafts-snapshot call.
-        self.assertEqual(len(calls), 2)
+        # One thread listing, one Drafts snapshot, and one Sent-reply snapshot.
+        self.assertEqual(len(calls), 3)
 
     def test_get_email_thread_text_mode_never_calls_drafts_scan(self):
         """Thread text output is rendered entirely inside AppleScript (no
@@ -2533,6 +2666,9 @@ class SubjectFilterUnboundReferenceTests(unittest.TestCase):
         captured = {}
 
         def fake_run(script, timeout=120):
+            sent_result = _empty_sent_reply_snapshot(script)
+            if sent_result is not None:
+                return sent_result
             captured["script"] = script
             return applescript_result
 

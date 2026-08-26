@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta
 
 import pytest
+from apple_mail_mcp.backend.base import ToolError
 from apple_mail_mcp.tools.calendar import list_events
 
 from .conftest import HOST_TZ, FakeReadEngine, raw_event
@@ -242,6 +243,45 @@ class TestRecurringExpansion:
 
 
 class TestPartialFailure:
+    class _FailingReadEngine(FakeReadEngine):
+        def fetch_window(self, window, calendar_id, **kwargs):
+            if calendar_id == "UID-WORK":
+                raise ToolError(code="CALENDAR_READ_FAILED", message="synthetic target failure")
+            return super().fetch_window(window, calendar_id, **kwargs)
+
+    def test_explicit_total_failure_is_structured(self, fake_engines):
+        fake_engines(read=self._FailingReadEngine())
+
+        payload = _run(calendar="Work")
+
+        assert payload["code"] == "CALENDAR_READ_FAILED"
+        assert "calendar_errors" in payload["remediation"]
+
+    def test_explicit_access_denial_preserves_access_remediation(self, fake_engines):
+        class _AccessDeniedEngine(FakeReadEngine):
+            def fetch_window(self, window, calendar_id, **kwargs):
+                raise ToolError(
+                    code="CALENDAR_ACCESS_DENIED",
+                    message="synthetic access denial",
+                    remediation={"pane": "System Settings > Privacy & Security > Automation"},
+                )
+
+        fake_engines(read=_AccessDeniedEngine())
+
+        payload = _run(calendar="Work")
+
+        assert payload["code"] == "CALENDAR_ACCESS_DENIED"
+        assert "Automation" in str(payload["remediation"])
+
+    def test_unscoped_failure_keeps_partial_results(self, fake_engines):
+        read = self._FailingReadEngine(events=[raw_event("UID-1", calendar="Home", start=_soon())])
+        fake_engines(read=read)
+
+        payload = _run()
+
+        assert payload["events"]
+        assert any("synthetic target failure" in error for error in payload["calendar_errors"])
+
     def test_per_calendar_errors_collected(self, fake_engines):
         read = FakeReadEngine(events=[raw_event("UID-1", start=_soon())], row_errors=["scan cap reached"])
         fake_engines(read=read)

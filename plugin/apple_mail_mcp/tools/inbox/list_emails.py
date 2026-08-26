@@ -15,6 +15,7 @@ from apple_mail_mcp.core import (
     account_not_found_json,
     inject_preferences,
 )
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.core.reply_state import DraftsSnapshot, fetch_drafts_snapshot
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import inbox
@@ -33,6 +34,7 @@ from apple_mail_mcp.tools.reply_state_wiring import (
     MAX_DRAFT_SNAPSHOT_ACCOUNTS,
     annotate_rows_with_reply_state,
     build_draft_scan_status,
+    build_sent_reply_scan_status,
 )
 
 
@@ -97,12 +99,9 @@ async def list_inbox_emails(
             explicitly. Prefer ``read_status``.
         include_content: Whether to include a content preview for each email (slower, default: False)
         output_format: "text" (default, human-readable) or "json" (structured list of email dicts)
-        exclude_replied: When True, filter out rows where Mail's native
-            ``was_replied_to`` flag is true. Every row already carries
-            ``was_replied_to`` unconditionally (JSON) or a ``[REPLIED]`` tag
-            (text); this only controls whether matching rows are dropped.
-            No Sent-mailbox scan is performed for this check (v3.11.0+: the
-            native per-message property replaces the old Message-ID probe).
+        exclude_replied: When True, filter out rows with confirmed composite
+            reply state. JSON mode combines Mail's native flag with one bounded
+            Sent-header snapshot; text mode uses Mail's native flag only.
         flag_replied: Deprecated; ``was_replied_to`` is now always present
             on every row (no parameter gates it), so this flag no longer
             changes what is fetched. Kept only for backward compatibility:
@@ -137,9 +136,10 @@ async def list_inbox_emails(
         read status (always a ``str``).
 
         JSON mode (``output_format='json'``): a Python ``dict`` with stable
-        shape ``{"emails": [...], "errors": [...], "draft_scan": {...}}``.
-        Every email row always carries ``was_replied_to`` (bool) and
-        ``has_draft`` (bool or null); ``draft_scan`` summarizes the Drafts
+        shape ``{"emails": [...], "errors": [...], "sent_reply_scan": {...},
+        "draft_scan": {...}}``. Every row carries raw ``was_replied_to`` /
+        ``mail_was_replied_to``, nullable ``has_sent_reply`` and composite
+        ``reply_state``, plus nullable ``has_draft``. ``draft_scan`` summarizes the Drafts
         correlation scan: ``{"status": "ok"|"error"|"skipped", "scanned":
         N, "accounts": [...], "error"?: "..."}``. ``errors`` lists per-account
         probe failures: a bare account name when its AppleScript probe timed
@@ -248,7 +248,9 @@ async def list_inbox_emails(
 
     # Native was_replied_to needs no id lookup; internet_message_id is only
     # fetched when has_draft's header-path correlation can use it.
-    want_message_id = include_draft_state
+    # JSON reply-state correlation needs the RFC Message-ID even when Drafts
+    # correlation is disabled.
+    want_message_id = include_draft_state or output_format == "json"
 
     if output_format == "json":
         body = await inbox._list_inbox_emails_json(
@@ -496,7 +498,12 @@ async def _list_inbox_emails_json(
                 include_message_id,
             )
         except AppleScriptTimeout:
-            return {"emails": [], "errors": [account], "draft_scan": build_draft_scan_status({})}
+            return {
+                "emails": [],
+                "errors": [account],
+                "draft_scan": build_draft_scan_status({}),
+                "sent_reply_scan": build_sent_reply_scan_status({}),
+            }
         emails = _parse_pipe_delimited_emails(raw, has_message_id=include_message_id)
         # A swallowed AppleScript failure used to reach here as "" → [] with
         # errors == [], which reads as "inbox empty". The script now emits an
@@ -506,10 +513,20 @@ async def _list_inbox_emails_json(
         try:
             accounts = await asyncio.to_thread(inbox._list_mail_accounts, timeout)
         except AppleScriptTimeout:
-            return {"emails": [], "errors": ["__account_listing__"], "draft_scan": build_draft_scan_status({})}
+            return {
+                "emails": [],
+                "errors": ["__account_listing__"],
+                "draft_scan": build_draft_scan_status({}),
+                "sent_reply_scan": build_sent_reply_scan_status({}),
+            }
 
         if not accounts:
-            return {"emails": [], "errors": [], "draft_scan": build_draft_scan_status({})}
+            return {
+                "emails": [],
+                "errors": [],
+                "draft_scan": build_draft_scan_status({}),
+                "sent_reply_scan": build_sent_reply_scan_status({}),
+            }
 
         async def run_one(acct: str) -> tuple[str, str | AppleScriptTimeout]:
             try:
@@ -536,23 +553,30 @@ async def _list_inbox_emails_json(
             emails.extend(_parse_pipe_delimited_emails(outcome, has_message_id=include_message_id))
             errors.extend(_parse_inbox_error_lines(outcome))
 
-    # Replied-detection: `was_replied_to` is parsed straight off Mail's
-    # native property, so no Sent-mailbox AppleScript round trip is needed.
-    if exclude_replied:
-        emails = [e for e in emails if not e.get("was_replied_to")]
-    elif flag_replied:
-        for email in emails:
-            if email.get("was_replied_to"):
-                email["already_replied"] = True
-
     draft_timeout = timeout if timeout is not None else 60
+    sent_snapshots: dict[str, SentReplySnapshot] = {}
+    sent_accounts_requested: list[str] = []
     snapshots = annotate_rows_with_reply_state(
         emails,
         runner=inbox.run_applescript,
         timeout=draft_timeout,
         include_draft_state=include_draft_state,
+        include_sent_reply_state=True,
+        sent_snapshots=sent_snapshots,
+        sent_accounts_requested=sent_accounts_requested,
     )
+    if exclude_replied:
+        emails = [e for e in emails if e.get("reply_state") is not True]
+    elif flag_replied:
+        for email in emails:
+            if email.get("reply_state") is True:
+                email["already_replied"] = True
     if exclude_drafted:
         emails = [e for e in emails if not e.get("has_draft")]
 
-    return {"emails": emails, "errors": errors, "draft_scan": build_draft_scan_status(snapshots)}
+    return {
+        "emails": emails,
+        "errors": errors,
+        "draft_scan": build_draft_scan_status(snapshots),
+        "sent_reply_scan": build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
+    }

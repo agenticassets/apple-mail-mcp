@@ -121,8 +121,12 @@ async def check_availability(
             engine=engine,
             window=fetch_window,
             calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+            calendar_selector_kinds={
+                str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes
+            },
             expand_recurring=True,
             timeout=timeout,
+            fail_on_total_failure=bool(calendars),
         )
     except AppleScriptTimeout:
         return timeout_error("check_availability", timeout)

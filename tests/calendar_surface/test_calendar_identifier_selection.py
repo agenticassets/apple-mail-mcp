@@ -27,8 +27,8 @@ def _create_event(**kwargs):
 
 def _duplicate_name_engine() -> FakeReadEngine:
     calendars = [
-        {"calendar_id": "CAL-PERSONAL", "id_kind": "calendarIdentifier", "name": "Shared", "writable": True},
-        {"calendar_id": "CAL-TEAM", "id_kind": "calendarIdentifier", "name": "Shared", "writable": True},
+        {"calendar_id": "CAL-PERSONAL", "id_kind": "calendar_object_reference", "name": "Shared", "writable": True},
+        {"calendar_id": "CAL-TEAM", "id_kind": "calendar_object_reference", "name": "Shared", "writable": True},
     ]
     now = datetime.now(HOST_TZ) + timedelta(days=1)
     return FakeReadEngine(
@@ -49,7 +49,7 @@ class TestCalendarIdentifierSelection:
 
         assert [calendar["name"] for calendar in payload["calendars"]] == ["Shared", "Shared"]
         assert [calendar["calendar_id"] for calendar in payload["calendars"]] == ["CAL-PERSONAL", "CAL-TEAM"]
-        assert all(calendar["id_kind"] == "calendarIdentifier" for calendar in payload["calendars"])
+        assert all(calendar["id_kind"] == "calendar_object_reference" for calendar in payload["calendars"])
 
     def test_duplicate_display_name_refuses_read_without_selecting_first_match(self, fake_engines):
         read = _duplicate_name_engine()
@@ -63,6 +63,20 @@ class TestCalendarIdentifierSelection:
             "CAL-PERSONAL",
             "CAL-TEAM",
         }
+
+    def test_duplicate_names_without_stable_ids_fail_closed(self, fake_engines):
+        read = FakeReadEngine(
+            calendars=[
+                {"calendar_id": "Shared", "id_kind": "name", "name": "Shared", "writable": True},
+                {"calendar_id": "Shared", "id_kind": "name", "name": "Shared", "writable": True},
+            ]
+        )
+        fake_engines(read=read)
+
+        payload = _list_events(calendar="Shared", days_ahead=2)
+
+        assert payload["code"] == "CALENDAR_IDENTIFIER_UNAVAILABLE"
+        assert read.fetch_calls == []
 
     def test_calendar_identifier_selects_one_duplicate_for_read(self, fake_engines):
         read = _duplicate_name_engine()

@@ -67,7 +67,9 @@ class GetNeedsResponseScriptTests(unittest.TestCase):
         # Inner repliedIds AppleScript loop is gone — matching is in Python.
         self.assertNotIn("repeat with repliedRef in repliedIds", inbox_script)
         # The replied-id probe still does header-based detection.
-        self.assertIn("set repliedIds to {}", replied_script)
+        self.assertIn("set outputLines to {}", replied_script)
+        self.assertIn('"SCANNED|||"', replied_script)
+        self.assertIn('"TOTAL|||"', replied_script)
         self.assertIn("In-Reply-To:", replied_script)
         self.assertIn("References:", replied_script)
         # Subject fallback must NOT be present — header-based only.

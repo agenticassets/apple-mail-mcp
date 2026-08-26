@@ -1,7 +1,7 @@
 {
   "name": "apple-mail",
   "displayName": "Apple Mail",
-  "version": "3.12.0",
+  "version": "3.12.1",
   "description": "Natural language interface for Apple Mail and Apple Calendar: 41 MCP tools with draft-safe defaults for search, triage, compose and draft verification, mailbox organization, analytics and export, plus bounded calendar reads, availability search, and conflict-checked event creation. Bundled workflow skills cover Mail setup, triage, inbox zero, taxonomy, archiving, Mail rules, drafting, attachments, writing style, calendar operation, and meeting scheduling.",
   "author": {
     "name": "Agentic Assets"

@@ -1,6 +1,6 @@
 ---
 name: "finalize-apple-mail-mcp"
-description: "Final codebase review and doc/manifest sync for apple-mail-mcp after feature work. Starts with plugin-validator to fix manifest and doc drift, then pytest, code-simplifier, CLAUDE.md/README/skills/MCPB sync, a required `dev-check.sh release` artifact rebuild, and finally commit and push to close its own loop. Use when finishing a change, before release, when the user says finalize, sync docs, update manifests, or ship the branch."
+description: "Final codebase review and doc/manifest sync for apple-mail-mcp after feature work. Starts with plugin-validator to fix manifest and doc drift, then pytest, code-simplifier, CLAUDE.md/README/skills/MCPB sync, a required `dev-check.sh release` artifact rebuild, then commit and push, and — once Cayman approves the merge — merging, signing the release tag, and attaching artifacts to the GitHub Release, because a merged-but-untagged version is not a closed loop. Use when finishing a change, before release, when the user says finalize, sync docs, update manifests, ship the branch, merge to main, tag a release, or cut a release."
 ---
 
 # Finalize apple-mail-mcp
@@ -73,8 +73,8 @@ Finalize progress:
 - [ ] 6. skill-reviewer (if plugin/skills touched)
 - [ ] 7. Rebuild release artifacts: `bash tools/gates/dev-check.sh release` (rebuilds **all three** artifacts: `apple-mail-plugin.zip` + `apple-mail.plugin` + `apple-mail-mcp-v{VERSION}.mcpb`, runs full validators including byte-parity check, runs mcpb unpack smoke). NEVER skip this step.
 - [ ] 8. Final review checklist
-- [ ] 9. Commit (default: yes, after release tier is green)
-- [ ] 10. Push (default: yes, to current branch; open PR if branch is protected)
+- [ ] 9. Commit and push (default: yes, after release tier is green; open a PR if the branch is protected)
+- [ ] 10. Merge (needs Cayman's explicit approval), then tag and release if the change carries a version. **A pushed branch is not a finished change** — stamp AFTER the merge, never before.
 ```
 
 ### 1. plugin-validator first (required)
@@ -251,6 +251,59 @@ git push -u origin HEAD
 ```
 
 If `HEAD` is on a protected branch (e.g. `main` with branch-protection rules), switch to a feature branch and open a PR with `gh pr create` instead; same default-to-action principle.
+
+### 10. Merge, tag, and release (required; the loop is not closed at "pushed")
+
+**A pushed branch is not a finished change.** Finalize ends when the work is on
+`main` and, if it carries a version, when that version is tagged and released.
+Stopping at "PR opened" leaves a merged-but-untagged version behind, which is
+how `v3.12.0` sat untagged across four PRs.
+
+**Merging needs Cayman's explicit approval** ("merge to main", "Cayman approved
+this merge", or equivalent). Never use GitHub native auto-merge. Ask for it as
+the closing action rather than leaving the PR open silently.
+
+Once approved, the order below is not stylistic — each step invalidates the one
+before it:
+
+```bash
+gh pr merge <N> --squash --repo Agentic-Assets/apple-mail-mcp   # or --merge
+git checkout main && git fetch origin && git pull --ff-only origin main
+bash tools/gates/source-release-gate.sh          # MUST come after the merge
+bash tools/gates/create-release-tag.sh           # preview; no signing
+bash tools/gates/create-release-tag.sh --confirm-create
+git push origin vX.Y.Z
+bash tools/gates/marketplace-handoff.sh vX.Y.Z
+```
+
+**Why that order.** The gate's stamp binds HEAD's *commit SHA*, not its tree.
+Stamping on the feature branch and then merging produces a merge commit with an
+identical tree but a new SHA, so the stamp reads stale and the tag push is
+refused. Stamping before the merge is wasted work — budget ~7 minutes for the
+run and do it once, afterward.
+
+**Three preconditions that fail late if unmet:**
+
+- **A completely clean checkout, including untracked and *gitignored* files.**
+  `validate_repo_root.py` scans the filesystem, so a gitignored file still
+  fails it. `uv.lock` is the recurring one: this repo uses pip + `.venv`, but
+  any `uv run` whose cwd sits inside the tree walks up, finds the root
+  `pyproject.toml`, and writes `uv.lock` there — an external MCP server doing
+  this is enough. Park it outside the tree rather than deleting it (shared
+  checkout, and it may be another agent's), then re-run the gate.
+- **`user.signingkey` must be set *and* its key loaded.**
+  `source_release.py create_tag` runs `git -c gpg.format=ssh tag -s`, which
+  forces the format but not the key. The key is machine-local and does not
+  travel. If it is passphrase-protected and absent from `ssh-agent`, signing
+  fails outright — `ssh-add` is the user's to run; never handle the passphrase.
+- **HEAD must equal both the fetched and the live `origin/main`.** Run
+  `create-release-tag.sh` with no flags first; it previews and prints the exact
+  target SHA without signing anything.
+
+Finally, attach `apple-mail-plugin.zip`, `apple-mail.plugin`, and
+`apple-mail-mcp-v{VERSION}.mcpb` to the GitHub Release. Only the `.zip` is
+tracked in git; the other two are gitignored and exist solely as build output,
+so a Release without them ships an incomplete set.
 
 ## Release note
 

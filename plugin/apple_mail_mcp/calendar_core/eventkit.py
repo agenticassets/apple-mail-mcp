@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from apple_mail_mcp.backend.base import ToolError
 from apple_mail_mcp.calendar_core.window import CalendarWindow, require_issued_window
 
 _STATUS_NAMES = {
@@ -147,13 +148,33 @@ class EventKitCalendarEngine:
             try:
                 name = _text(cal.title()) or ""
                 identifier = _text(cal.calendarIdentifier())
+                try:
+                    source = cal.source()
+                except Exception:
+                    source = None
+                source_title = None
+                source_identifier = None
+                if source is not None:
+                    try:
+                        source_title = _text(source.title())
+                    except Exception:
+                        source_title = None
+                    try:
+                        source_identifier = _text(source.sourceIdentifier())
+                    except Exception:
+                        source_identifier = None
                 calendars.append(
                     {
                         "calendar_id": identifier or name,
                         "id_kind": "calendarIdentifier" if identifier else "name",
+                        "identifier_diagnostic": (
+                            "eventkit_calendar_identifier" if identifier else "exact_name_fallback"
+                        ),
                         "name": name,
                         "writable": bool(cal.allowsContentModifications()),
                         "description": None,
+                        "source_title": source_title,
+                        "source_identifier": source_identifier,
                     }
                 )
             except Exception as exc:
@@ -250,18 +271,34 @@ class EventKitCalendarEngine:
         include_detail: bool = False,
         event_ids: list[str] | None = None,
         timeout: int | None = None,
+        selector_kind: str = "calendarIdentifier",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         del timeout
         require_issued_window(window)
         store = self._event_store()
         entity = getattr(self._ek, "EKEntityTypeEvent", 0)
         target = None
-        for cal in store.calendarsForEntityType_(entity) or []:
-            if _text(cal.calendarIdentifier()) == calendar_id:
-                target = cal
-                break
+        candidates = list(store.calendarsForEntityType_(entity) or [])
+        if selector_kind == "name":
+            matches = [cal for cal in candidates if _text(cal.title()) == calendar_id]
+            if len(matches) > 1:
+                raise ToolError(
+                    code="AMBIGUOUS_CALENDAR_SELECTOR",
+                    message="The exact calendar name no longer identifies one unique calendar.",
+                    remediation={"preferred": "Call list_calendars again and use a stable calendar_id."},
+                )
+            target = matches[0] if matches else None
+        else:
+            for cal in candidates:
+                if _text(cal.calendarIdentifier()) == calendar_id:
+                    target = cal
+                    break
         if target is None:
-            return [], [f"calendar not found: {calendar_id}"]
+            raise ToolError(
+                code="CALENDAR_NOT_FOUND",
+                message="The resolved calendar no longer exists.",
+                remediation={"preferred": "Call list_calendars again and retry with its current calendar_id."},
+            )
         predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
             self._nsdate(window.start), self._nsdate(window.end), [target]
         )
@@ -290,9 +327,10 @@ class EventKitCalendarEngine:
         *,
         include_detail: bool = False,
         timeout: int | None = None,
+        selector_kind: str = "calendarIdentifier",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """EventKit predicates expand occurrences natively; no master pass."""
-        del window, calendar_id, include_detail, timeout
+        del window, calendar_id, include_detail, timeout, selector_kind
         return [], []
 
 

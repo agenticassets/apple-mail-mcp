@@ -119,11 +119,15 @@ async def list_events(
             engine=engine,
             window=window,
             calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+            calendar_selector_kinds={
+                str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes
+            },
             expand_recurring=expand_recurring,
             query=query,
             participant_query=participant_query,
             include_all_day=include_all_day,
             timeout=timeout,
+            fail_on_total_failure=calendar is not None or bool(calendars),
         )
     except AppleScriptTimeout:
         return timeout_error("list_events", timeout)

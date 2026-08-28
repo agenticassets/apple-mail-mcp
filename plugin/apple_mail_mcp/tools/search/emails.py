@@ -14,9 +14,14 @@ from datetime import datetime, timedelta
 from apple_mail_mcp import server as _server
 from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
 from apple_mail_mcp.core import AppleScriptTimeout, inject_preferences, list_mail_account_names, normalize_search_terms
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import search
-from apple_mail_mcp.tools.reply_state_wiring import annotate_rows_with_reply_state, build_draft_scan_status
+from apple_mail_mcp.tools.reply_state_wiring import (
+    annotate_rows_with_reply_state,
+    build_draft_scan_status,
+    build_sent_reply_scan_status,
+)
 from apple_mail_mcp.tools.search.dispatch import _search_mail_records
 from apple_mail_mcp.tools.search.records import _body_scan_disabled_error, _build_search_response
 
@@ -87,13 +92,11 @@ async def search_emails(
           account no longer blocks the others, but its name will appear in
           the response's `errors` field (JSON) or partial banner (text).
           JSON also includes `error_details` when the failure reason is known.
-        - `was_replied_to` is read off Mail's native property in the same
-          per-message pass as subject/sender, so `exclude_replied` and
-          `flag_replied` no longer cost a second AppleScript round trip (no
-          more Sent-mailbox scan). `include_draft_state=True` (the default)
-          does add up to one bounded Drafts-mailbox scan per account
-          appearing in the result set (capped at 5 accounts); set
-          `include_draft_state=False` to skip it entirely.
+        - JSON mode adds one bounded Sent-header snapshot per relevant account
+          so it can expose composite reply state. Text mode skips that work
+          unless `exclude_replied` or `flag_replied` consumes the composite
+          signal. `include_draft_state=True` separately adds one bounded Drafts
+          snapshot per account, capped at 5 accounts.
 
     Args:
         account: Account name to search in (e.g., "Gmail", "Work").
@@ -131,11 +134,10 @@ async def search_emails(
             runs, rather than returning an empty result set that would be
             indistinguishable from "no matches".
         sort: Result sort order: "date_desc" or "date_asc"
-        exclude_replied: When True, filter out emails whose native
-            `was_replied_to` flag is true (Mail's own read-only "was replied
-            to" property, read in the same per-message pass as
-            subject/sender, no extra AppleScript round trip). Default False
-            keeps backward-compatible behavior.
+        exclude_replied: When True, filter out emails whose composite
+            `reply_state` is confirmed true. The composite combines Mail's
+            native property with bounded Sent-header evidence and fails open
+            when the Sent scan is incomplete.
         flag_replied: Deprecated; `was_replied_to` is now always present on
             every item (no parameter gates it), so this flag no longer
             changes what is fetched. Kept only for backward compatibility:
@@ -323,29 +325,32 @@ async def search_emails(
             mailboxes=mailboxes if mailboxes else None,
         )
 
-        # Replied-detection: `was_replied_to` is parsed straight off Mail's
-        # native property (see script._build_search_script), so no second
-        # Sent-mailbox AppleScript round trip is needed here anymore.
-        if exclude_replied:
-            records = [r for r in records if not r.get("was_replied_to")]
-        elif flag_replied:
-            for rec in records:
-                if rec.get("was_replied_to"):
-                    rec["already_replied"] = True
-
         # Draft-state annotation: one bounded Drafts snapshot per account
         # appearing in the (already replied-filtered) result set, run off the
         # event loop since it is itself a synchronous AppleScript round trip.
         draft_timeout = timeout if timeout is not None else 60
+        sent_snapshots: dict[str, SentReplySnapshot] = {}
+        sent_accounts_requested: list[str] = []
+        include_sent_reply_state = output_format == "json" or exclude_replied or flag_replied
         snapshots = await asyncio.to_thread(
             annotate_rows_with_reply_state,
             records,
             runner=search.run_applescript,
             timeout=draft_timeout,
             include_draft_state=include_draft_state,
+            include_sent_reply_state=include_sent_reply_state,
             date_field="received_date",
+            sent_snapshots=sent_snapshots,
+            sent_accounts_requested=sent_accounts_requested,
         )
         draft_scan = build_draft_scan_status(snapshots)
+        sent_reply_scan = build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested)
+        if exclude_replied:
+            records = [r for r in records if r.get("reply_state") is not True]
+        elif flag_replied:
+            for rec in records:
+                if rec.get("reply_state") is True:
+                    rec["already_replied"] = True
         if exclude_drafted:
             records = [r for r in records if not r.get("has_draft")]
 
@@ -368,6 +373,7 @@ async def search_emails(
             include_content_hint=include_content,
             body_text_hint=bool(body_text),
             draft_scan=draft_scan,
+            sent_reply_scan=sent_reply_scan,
         )
     except ValueError as exc:
         return f"Error: {exc}"

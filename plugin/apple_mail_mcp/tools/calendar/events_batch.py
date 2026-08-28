@@ -166,6 +166,7 @@ def batch_create_events(
             for spec in specs:
                 spec["conflicts"] = find_conflicts(
                     calendar_id=str(target["calendar_id"]),
+                    selector_kind=str(target.get("id_kind") or "name"),
                     start=spec["start"],
                     end=spec["end"],
                     timezone_name=timezone,
@@ -237,6 +238,7 @@ def batch_create_events(
                 url=spec["url"],
                 alarms_minutes_before=spec["alarms_minutes_before"],
                 timeout=timeout,
+                selector_kind=str(target.get("id_kind") or "name"),
             )
             row = _spec_payload(spec)
             row["event_id"] = event_id

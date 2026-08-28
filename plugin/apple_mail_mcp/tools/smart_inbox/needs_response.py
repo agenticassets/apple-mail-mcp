@@ -1,7 +1,7 @@
 """``get_needs_response`` tool: unread emails that still need a reply from you.
 
-Filters newsletters/automated senders, labels priority, and joins two
-independent reply-state signals from ``core.reply_state``
+Filters newsletters/automated senders, labels priority, and joins reply-state
+signals from ``core.reply_state``
 (``tasks/active/reply-state-annotation/plan-2026-07-10.md``): the native
 ``was replied to`` flag read inline in the per-message loop, and a bounded
 Drafts snapshot correlated against each candidate. By default this tool
@@ -10,7 +10,7 @@ are excluded, and the exclusion is never silent, ``skipped_replied_count``
 and ``skipped_drafted_count`` report how many rows were left out. Patched
 names (``run_applescript``, ``validate_account_name``) are referenced via
 the ``smart_inbox`` package facade so the test seams keep firing;
-``fetch_replied_ids`` and ``fetch_drafts_snapshot`` are both invoked with
+``fetch_sent_reply_snapshot`` and ``fetch_drafts_snapshot`` are both invoked with
 ``runner=smart_inbox.run_applescript``.
 """
 
@@ -26,10 +26,10 @@ from apple_mail_mcp.core import (
     AppleScriptTimeout,
     date_cutoff_script,
     escape_applescript,
-    fetch_replied_ids,
     inject_preferences,
     sanitize_pipe_delimited_field,
 )
+from apple_mail_mcp.core.replied import SentReplySnapshot, fetch_sent_reply_snapshot
 from apple_mail_mcp.core.reply_state import (
     DraftsSnapshot,
     fetch_drafts_snapshot,
@@ -37,6 +37,7 @@ from apple_mail_mcp.core.reply_state import (
 )
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import smart_inbox
+from apple_mail_mcp.tools.reply_state_wiring import sent_reply_scan_warning
 
 # ``_NeedsResponseRow`` (the row dataclass), the ``MSG|||...`` parser, the
 # priority-label formatter, and the classifier now live in
@@ -79,6 +80,7 @@ def _format_needs_response_text(
     include_drafted: bool,
     include_draft_state: bool,
     draft_scan: dict[str, Any],
+    sent_reply_scan: dict[str, Any],
 ) -> str:
     """Render the human-readable output identical to the legacy AppleScript, plus reply-state notes."""
     lines = [
@@ -111,6 +113,9 @@ def _format_needs_response_text(
             f"Draft scan failed ({draft_scan.get('error', 'unknown error')}); "
             "has_draft is unavailable for these results."
         )
+    sent_warning = sent_reply_scan_warning(sent_reply_scan)
+    if sent_warning:
+        lines.append(f"Sent reply-state partial: {sent_warning}")
     # Trailing newline + return-style separator matched the legacy output.
     return "\n".join(lines) + "\n"
 
@@ -293,6 +298,10 @@ def get_needs_response(
       boolean, read for every candidate in the same per-message loop that
       reads subject/sender/date. This is the primary, always-on signal;
       no parameter gates it.
+    - ``has_sent_reply``: optional exact In-Reply-To/References evidence from
+      a short bounded Sent scan, enabled only by
+      ``check_already_replied=True``. Positive matches remain trustworthy when
+      the scan is partial; nonmatches are null unless it completed cleanly.
     - ``has_draft``: a bounded, newest-first Drafts snapshot for *account*
       (fetched once, lazily, only when there is at least one candidate
       row) correlated against each candidate by In-Reply-To/References
@@ -300,7 +309,7 @@ def get_needs_response(
       when the scan ran; ``null`` when the scan was skipped or errored, in
       which case nothing is excluded for draft state (fail open).
 
-    Default exclusion: rows with ``was_replied_to=true`` or
+    Default exclusion: rows with ``reply_state=true`` or
     ``has_draft=true`` are left out of the results. The exclusion is never
     silent: ``skipped_replied_count`` and ``skipped_drafted_count`` report
     how many rows were left out (JSON keys; a one-line note in text mode).
@@ -327,15 +336,10 @@ def get_needs_response(
             is populated. When False, the snapshot is skipped entirely:
             ``has_draft`` is ``null`` on every row, nothing is excluded for
             draft state, and ``draft_scan.status`` is ``"skipped"``.
-        check_already_replied: When True, additionally scan the Sent
-            mailbox for ``In-Reply-To:``/``References:`` headers as an
-            extra, opt-in verification layer for edge cases the native
-            flag might miss; a match is OR'd into the replied state (the
-            ``already_replied`` field reflects the combined signal).
-            Defaults to False because reading Sent headers on Exchange
-            triggers per-message IMAP downloads and can cause timeouts on
-            large inboxes; the native ``was_replied_to`` flag is now the
-            primary signal and needs no opt-in.
+        check_already_replied: When True, run one bounded Sent-header scan as
+            an additional reply signal. Defaults to False so ordinary calls do
+            not trigger remote Sent-header downloads. Failed or truncated
+            nonmatches stay unknown and fail open.
         timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
         output_format: ``"text"`` (default, human-readable) or ``"json"``
             (returns a structured dict suitable for programmatic use).
@@ -348,8 +352,8 @@ def get_needs_response(
         "skipped_drafted_count", "draft_scan": {"status", "scanned",
         "total", "truncated", "accounts", "error"?}, "errors"}``
         depending on *output_format*.
-        Each entry in ``high_priority``/``normal_priority`` carries
-        ``was_replied_to`` (bool) and ``has_draft`` (bool or ``null``).
+        Each entry carries raw ``was_replied_to`` / ``mail_was_replied_to``,
+        nullable ``has_sent_reply`` / ``reply_state``, and ``has_draft``.
     """
     if output_format not in {"text", "json"}:
         return _needs_response_error(
@@ -385,19 +389,12 @@ def get_needs_response(
     inbox_cap = min(max(max_results * 2, 20), SCAN_BOUNDS["INBOX_SHORT"])
     sent_cap = 20
 
-    # Budget: when replied-detection is on, the inbox scan gets the bulk
-    # of the wall-clock budget (the Sent scan is bounded and typically
-    # 1-3 s). Mirrors the get_awaiting_reply 60/40 split, but skewed
-    # further toward inbox because the Sent slice here is smaller. The
-    # Drafts snapshot gets its own small, fixed budget (~2s flat per the
-    # plan's live measurement), independent of this split.
+    # Sent evidence remains explicitly opt-in on this legacy workflow. The
+    # primary JSON read surfaces annotate automatically, but this parameter's
+    # False default is a compatibility and Exchange-performance contract.
     effective_timeout = timeout if timeout is not None else 120
-    if check_already_replied:
-        inbox_timeout = max(30, int(effective_timeout * 0.7))
-        sent_timeout = max(30, int(effective_timeout * 0.3))
-    else:
-        inbox_timeout = effective_timeout
-        sent_timeout = effective_timeout  # unused when check_already_replied=False
+    inbox_timeout = effective_timeout
+    sent_timeout = 30 if timeout is None else min(timeout, 30)
     drafts_timeout = 30 if timeout is None else min(timeout, 30)
 
     inbox_script = _build_needs_response_inbox_script(
@@ -432,21 +429,31 @@ def get_needs_response(
 
     rows = _parse_needs_response_inbox_rows(inbox_raw)
 
-    # Replied set: fetched via core helper which routes through this module's
-    # ``run_applescript`` symbol via the injected runner so tests patching
-    # ``apple_mail_mcp.tools.smart_inbox.run_applescript`` see the call.
-    # When check_already_replied=False the set stays empty and no Sent scan
-    # runs; the native was_replied_to flag read in the inbox loop is the
-    # primary signal either way.
+    sent_reply_snapshot: SentReplySnapshot | None = None
     if check_already_replied:
-        replied_ids: set[str] = fetch_replied_ids(
+        sent_reply_snapshot = fetch_sent_reply_snapshot(
             account,
             sent_cap=sent_cap,
             timeout=sent_timeout,
             runner=smart_inbox.run_applescript,
         )
+
+    if sent_reply_snapshot is None:
+        sent_reply_scan: dict[str, Any] = {
+            "status": "skipped",
+            "scanned": 0,
+            "total": 0,
+            "truncated": False,
+            "errors": [],
+        }
     else:
-        replied_ids = set()
+        sent_reply_scan = {
+            "status": sent_reply_snapshot.status,
+            "scanned": sent_reply_snapshot.scanned,
+            "total": sent_reply_snapshot.total,
+            "truncated": sent_reply_snapshot.truncated,
+            "errors": list(sent_reply_snapshot.errors),
+        }
 
     # Drafts snapshot: one bounded scan per call, fetched lazily (only when
     # there is at least one candidate row to correlate against) so an empty
@@ -484,7 +491,7 @@ def get_needs_response(
 
     high, normal, skipped_replied, skipped_drafted = _classify_needs_response_rows(
         rows,
-        replied_ids=replied_ids,
+        sent_reply_snapshot=sent_reply_snapshot,
         include_already_replied=include_already_replied,
         include_drafted=include_drafted,
         drafts_snapshot=drafts_snapshot,
@@ -502,6 +509,7 @@ def get_needs_response(
             "skipped_replied_count": skipped_replied,
             "skipped_drafted_count": skipped_drafted,
             "draft_scan": draft_scan,
+            "sent_reply_scan": sent_reply_scan,
             "errors": [],
         }
 
@@ -517,4 +525,5 @@ def get_needs_response(
         include_drafted=include_drafted,
         include_draft_state=include_draft_state,
         draft_scan=draft_scan,
+        sent_reply_scan=sent_reply_scan,
     )

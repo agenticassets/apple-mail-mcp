@@ -14,7 +14,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from apple_mail_mcp.calendar_core.scripts_read import applescript_date_block
+from apple_mail_mcp.calendar_core.scripts_read import (
+    _calendar_name_guard,
+    _calendar_target_expression,
+    _calendar_target_line,
+    applescript_date_block,
+)
 from apple_mail_mcp.core import escape_applescript
 
 
@@ -98,13 +103,15 @@ def create_event_script(
     end_block: str,
     set_lines: str = "",
     timeout_seconds: int = 120,
+    selector_kind: str = "calendar_object_reference",
 ) -> str:
     """Create one event; *start_block*/*end_block* bind windowStart/windowEnd."""
     safe_calendar = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         try
-            set targetCal to first calendar whose calendarIdentifier is "{safe_calendar}"
+            {target_line}
             if writable of targetCal is false then return "ERROR_READONLY|||{safe_calendar}"
             {start_block}
             {end_block}
@@ -127,13 +134,15 @@ def update_event_script(
     end_block: str,
     set_lines: str = "",
     timeout_seconds: int = 120,
+    selector_kind: str = "calendar_object_reference",
 ) -> str:
     """Locate one event by bounded uid predicate and apply PATCH set lines."""
     safe_calendar = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         try
-            set targetCal to first calendar whose calendarIdentifier is "{safe_calendar}"
+            {target_line}
             if writable of targetCal is false then return "ERROR_READONLY|||{safe_calendar}"
             {start_block}
             {end_block}
@@ -156,14 +165,16 @@ def delete_events_script(
     start_block: str,
     end_block: str,
     timeout_seconds: int = 120,
+    selector_kind: str = "calendar_object_reference",
 ) -> str:
     """Delete events matched by bounded uid predicate; emits DELETED rows."""
     safe_calendar = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         set outputRows to {{}}
         try
-            set targetCal to first calendar whose calendarIdentifier is "{safe_calendar}"
+            {target_line}
             if writable of targetCal is false then return "ERROR_READONLY|||{safe_calendar}"
             {start_block}
             {end_block}
@@ -204,13 +215,20 @@ def create_calendar_script(*, calendar_name: str, timeout_seconds: int = 120) ->
 end tell"""
 
 
-def rename_calendar_script(*, calendar_id: str, new_name: str, timeout_seconds: int = 120) -> str:
+def rename_calendar_script(
+    *,
+    calendar_id: str,
+    new_name: str,
+    timeout_seconds: int = 120,
+    selector_kind: str = "calendar_object_reference",
+) -> str:
     """Rename a calendar addressed by its stable Calendar identifier."""
     safe_calendar = escape_applescript(calendar_id)
+    target_line = _calendar_target_line(calendar_id, selector_kind)
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         try
-            set targetCal to first calendar whose calendarIdentifier is "{safe_calendar}"
+            {target_line}
             if writable of targetCal is false then return "ERROR_READONLY|||{safe_calendar}"
             set name of targetCal to {_quoted(new_name)}
             return "RENAMED_CAL|||" & (name of targetCal)
@@ -221,7 +239,9 @@ def rename_calendar_script(*, calendar_id: str, new_name: str, timeout_seconds: 
 end tell"""
 
 
-def delete_calendar_script(*, calendar_id: str, timeout_seconds: int = 120) -> str:
+def delete_calendar_script(
+    *, calendar_id: str, timeout_seconds: int = 120, selector_kind: str = "calendar_object_reference"
+) -> str:
     """Delete a calendar via the inline whose-specifier form (cascade deletes its events).
 
     The variable-bound form (``set targetCal to calendar "X"`` then ``delete
@@ -231,10 +251,21 @@ def delete_calendar_script(*, calendar_id: str, timeout_seconds: int = 120) -> s
     non-empty calendar whose events cascade away with it).
     """
     safe_calendar = escape_applescript(calendar_id)
+    if selector_kind == "name":
+        target_line = _calendar_name_guard(calendar_id)
+        target_expression = _calendar_target_expression(calendar_id, selector_kind)
+    else:
+        target_line = f'''set targetCal to calendar id "{safe_calendar}"
+            set targetCalName to name of targetCal
+            set matchingCalendars to every calendar whose name is targetCalName
+            if (count of matchingCalendars) is 0 then error "CALENDAR_NOT_FOUND"
+            if (count of matchingCalendars) is greater than 1 then error "AMBIGUOUS_CALENDAR_SELECTOR"'''
+        target_expression = "first calendar whose name is targetCalName"
     return f"""tell application "Calendar"
     with timeout of {int(timeout_seconds)} seconds
         try
-            delete (first calendar whose calendarIdentifier is "{safe_calendar}")
+            {target_line}
+            delete ({target_expression})
             return "DELETED_CAL|||{safe_calendar}"
         on error errMsg
             return "ERROR_CALENDAR_WRITE|||" & errMsg

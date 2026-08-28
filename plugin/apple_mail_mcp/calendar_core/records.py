@@ -35,10 +35,36 @@ ALM_FIELDS = 3
 
 _NUMERIC_DATE = re.compile(r"^(\d{1,4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2}):(\d{1,2})$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_CALENDAR_REFERENCE_PREFIX = "calendar id "
 
 
 def _uid_ok(uid: str) -> bool:
     return bool(uid) and len(uid) <= EVENT_ID_MAX_LEN and not _CONTROL_CHARS.search(uid)
+
+
+def parse_calendar_reference_ids(raw: str) -> tuple[list[str], list[str]]:
+    """Parse Calendar.app object references returned by ``get calendars``.
+
+    Calendar.app exposes stable object specifiers as ``calendar id <opaque>``
+    even on hosts where reading the documented ``calendarIdentifier`` property
+    raises Apple event error -10000.  The returned identifiers are data, never
+    interpolated into AppleScript until the normal escaping layer handles them.
+    """
+    text = raw.strip()
+    if not text:
+        return [], []
+    identifiers: list[str] = []
+    errors: list[str] = []
+    for item in text.split(", "):
+        if not item.startswith(_CALENDAR_REFERENCE_PREFIX):
+            errors.append("calendar reference row did not use the expected object-id shape")
+            continue
+        identifier = item[len(_CALENDAR_REFERENCE_PREFIX) :].strip()
+        if not _uid_ok(identifier):
+            errors.append("calendar reference row carried an invalid object id")
+            continue
+        identifiers.append(identifier)
+    return identifiers, errors
 
 
 def parse_numeric_datetime(text: str, tz: tzinfo) -> datetime | None:
@@ -75,13 +101,21 @@ def parse_calendar_rows(raw: str) -> tuple[list[dict[str, Any]], list[str]]:
             errors.append("calendar row missing name")
             continue
         calendar_id = uid if _uid_ok(uid) else name
+        id_kind = "calendar_object_reference" if calendar_id == uid else "name"
         calendars.append(
             {
                 "calendar_id": calendar_id,
-                "id_kind": "calendarIdentifier" if calendar_id == uid else "name",
+                "id_kind": id_kind,
+                "identifier_diagnostic": (
+                    "stable_calendar_object_reference"
+                    if id_kind == "calendar_object_reference"
+                    else "exact_name_fallback"
+                ),
                 "name": name,
                 "writable": writable.strip().lower() == "true",
                 "description": description or None,
+                "source_title": None,
+                "source_identifier": None,
             }
         )
     return calendars, errors

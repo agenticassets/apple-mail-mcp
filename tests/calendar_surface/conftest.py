@@ -75,21 +75,21 @@ class FakeReadEngine:
             else [
                 {
                     "calendar_id": "UID-WORK",
-                    "id_kind": "calendarIdentifier",
+                    "id_kind": "calendar_object_reference",
                     "name": "Work",
                     "writable": True,
                     "description": None,
                 },
                 {
                     "calendar_id": "UID-HOME",
-                    "id_kind": "calendarIdentifier",
+                    "id_kind": "calendar_object_reference",
                     "name": "Home",
                     "writable": True,
                     "description": None,
                 },
                 {
                     "calendar_id": "UID-TEST",
-                    "id_kind": "calendarIdentifier",
+                    "id_kind": "calendar_object_reference",
                     "name": "MCP Test Calendar",
                     "writable": False,
                     "description": None,
@@ -127,12 +127,23 @@ class FakeReadEngine:
                 return str(calendar["calendar_id"])
         return calendar_name
 
-    def fetch_window(self, window, calendar_id, *, scan_cap, include_detail=False, event_ids=None, timeout=None):
+    def fetch_window(
+        self,
+        window,
+        calendar_id,
+        *,
+        scan_cap,
+        include_detail=False,
+        event_ids=None,
+        timeout=None,
+        selector_kind="calendar_object_reference",
+    ):
         calendar_name = self._calendar_name(calendar_id)
         self.fetch_calls.append(
             {
                 "calendar": calendar_name,
                 "calendar_id": calendar_id,
+                "selector_kind": selector_kind,
                 "scan_cap": scan_cap,
                 "include_detail": include_detail,
                 "event_ids": list(event_ids) if event_ids else None,
@@ -152,10 +163,24 @@ class FakeReadEngine:
             rows = [e for e in rows if window.start <= e["start"] <= window.end]
         return rows, list(self.row_errors)
 
-    def fetch_recurring_masters(self, window, calendar_id, *, include_detail=False, timeout=None):
+    def fetch_recurring_masters(
+        self,
+        window,
+        calendar_id,
+        *,
+        include_detail=False,
+        timeout=None,
+        selector_kind="calendar_object_reference",
+    ):
         calendar_name = self._calendar_name(calendar_id)
         self.master_calls.append(
-            {"calendar": calendar_name, "calendar_id": calendar_id, "window": window, "include_detail": include_detail}
+            {
+                "calendar": calendar_name,
+                "calendar_id": calendar_id,
+                "selector_kind": selector_kind,
+                "window": window,
+                "include_detail": include_detail,
+            }
         )
         return [
             dict(master)
@@ -184,22 +209,30 @@ class FakeWriteEngine:
         self.updated.append(kwargs)
         return kwargs["event_id"]
 
-    def delete_events(self, *, calendar_id, event_ids, window, timeout=None):
+    def delete_events(
+        self,
+        *,
+        calendar_id,
+        event_ids,
+        window,
+        timeout=None,
+        selector_kind="calendar_object_reference",
+    ):
         self.deleted.append({"calendar_id": calendar_id, "event_ids": list(event_ids), "window": window})
         return [{"event_id": eid, "title": f"title-{eid}"} for eid in event_ids], []
 
-    def count_events(self, calendar_id, *, timeout=None):
+    def count_events(self, calendar_id, *, timeout=None, selector_kind="calendar_object_reference"):
         return self.event_counts.get(calendar_id, 0)
 
     def create_calendar(self, *, name, timeout=None):
         self.calendar_ops.append({"op": "create", "name": name})
         return name
 
-    def rename_calendar(self, *, calendar_id, new_name, timeout=None):
+    def rename_calendar(self, *, calendar_id, new_name, timeout=None, selector_kind="calendar_object_reference"):
         self.calendar_ops.append({"op": "rename", "calendar_id": calendar_id, "new_name": new_name})
         return new_name
 
-    def delete_calendar(self, *, calendar_id, timeout=None):
+    def delete_calendar(self, *, calendar_id, timeout=None, selector_kind="calendar_object_reference"):
         self.calendar_ops.append({"op": "delete", "calendar_id": calendar_id})
         return calendar_id
 

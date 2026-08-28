@@ -2,9 +2,8 @@
 
 import json
 
-import pytest
-
 import apple_mail_mcp.server as server
+import pytest
 from apple_mail_mcp.core import AppleScriptTimeout
 from apple_mail_mcp.tools.calendar import list_calendars
 
@@ -34,6 +33,26 @@ class TestListCalendars:
         payload = json.loads(list_calendars())
         assert payload["default_calendar"] == "Home"
         assert [c for c in payload["calendars"] if c["is_default"]][0]["name"] == "Home"
+
+    def test_default_calendar_name_resolves_under_stable_id_engine(self, fake_engines, monkeypatch):
+        read = FakeReadEngine(name="eventkit", default="Work", default_id="UID-WORK")
+        fake_engines(read=read)
+        monkeypatch.setattr(server, "DEFAULT_CALENDAR", "Home")
+
+        payload = json.loads(list_calendars())
+
+        marked = [calendar for calendar in payload["calendars"] if calendar["is_default"]]
+        assert [calendar["calendar_id"] for calendar in marked] == ["UID-HOME"]
+
+    def test_default_calendar_stable_id_marks_exact_calendar(self, fake_engines, monkeypatch):
+        read = FakeReadEngine(name="eventkit", default="Work", default_id="UID-WORK")
+        fake_engines(read=read)
+        monkeypatch.setattr(server, "DEFAULT_CALENDAR", "UID-HOME")
+
+        payload = json.loads(list_calendars())
+
+        marked = [calendar for calendar in payload["calendars"] if calendar["is_default"]]
+        assert [calendar["calendar_id"] for calendar in marked] == ["UID-HOME"]
 
     def test_engine_default_used_without_env(self, fake_engines, monkeypatch):
         read = FakeReadEngine(default="Work")

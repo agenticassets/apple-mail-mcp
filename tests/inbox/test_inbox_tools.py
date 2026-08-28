@@ -49,12 +49,15 @@ class InboxToolTests(unittest.TestCase):
         # include_content=True and parse the pipe-delimited script output.
         # JSON mode now returns a dict with stable shape {emails, errors};
         # callers must read .emails rather than treating the result as a list.
-        captured = {}
+        captured = {"scripts": []}
 
         def fake_run(script, timeout=120):
-            captured["script"] = script
-            # Schema: subject|||sender|||date|||read|||account|||mail_app_id|||was_replied_to|||content_preview
-            return "Subject|||sender@example.com|||Thu, Jan 1, 2026|||false|||Work|||1|||false|||Hello | world"
+            captured["scripts"].append(script)
+            # JSON reply annotation requests Internet Message-ID before preview.
+            return (
+                "Subject|||sender@example.com|||Thu, Jan 1, 2026|||false|||Work|||1|||false"
+                "|||<fixture@example.com>|||Hello | world"
+            )
 
         with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
             response = _run(
@@ -69,7 +72,7 @@ class InboxToolTests(unittest.TestCase):
 
         self.assertIsInstance(response, dict)
         self.assertEqual(response["errors"], [])
-        self.assertIn("content of aMessage", captured["script"])
+        self.assertTrue(any("content of aMessage" in script for script in captured["scripts"]))
         self.assertEqual(response["emails"][0]["content_preview"], "Hello | world")
         self.assertFalse(response["emails"][0]["was_replied_to"])
 

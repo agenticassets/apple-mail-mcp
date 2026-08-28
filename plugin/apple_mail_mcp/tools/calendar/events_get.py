@@ -87,10 +87,14 @@ async def get_events_by_id(
             engine=engine,
             window=window,
             calendar_ids=[str(scope["calendar_id"]) for scope in scopes],
+            calendar_selector_kinds={
+                str(scope["calendar_id"]): str(scope.get("id_kind") or "name") for scope in scopes
+            },
             expand_recurring=False,
             include_detail=True,
             event_ids=ids,
             timeout=timeout,
+            fail_on_total_failure=calendar is not None,
         )
     except AppleScriptTimeout:
         return timeout_error("get_events_by_id", timeout)

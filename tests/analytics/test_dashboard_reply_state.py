@@ -29,6 +29,8 @@ def _fake_runner(recent_raw: str, draft_raw: str | None = None):
     def runner(script: str, timeout: int | None = None) -> str:
         if "draftsMailbox" in script:
             return draft_raw if draft_raw is not None else "COUNT|||0\nTOTAL|||0"
+        if "sentMailbox" in script:
+            return "SCANNED|||0\nTOTAL|||0"
         return recent_raw
 
     return runner
@@ -88,6 +90,8 @@ class DashboardHasDraftTests(unittest.TestCase):
 
         def runner(script: str, timeout: int | None = None) -> str:
             calls.append(script)
+            if "sentMailbox" in script:
+                return "SCANNED|||0\nTOTAL|||0"
             return _recent_row("Budget", "false")
 
         with (
@@ -98,7 +102,7 @@ class DashboardHasDraftTests(unittest.TestCase):
                 analytics_tools.inbox_dashboard(account="Work", output_format="json", include_draft_state=False)
             )
 
-        self.assertEqual(len(calls), 1, "no Drafts-snapshot AppleScript call should run")
+        self.assertEqual(len(calls), 2, "only recent and Sent-reply scans should run; no Drafts scan")
         self.assertEqual(result["draft_scan"]["status"], "skipped")
 
 

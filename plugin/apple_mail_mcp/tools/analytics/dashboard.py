@@ -12,10 +12,15 @@ from apple_mail_mcp.core import (
     inject_preferences,
     sanitize_pipe_delimited_field,
 )
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.core.reply_state import was_replied_fragment
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import analytics
-from apple_mail_mcp.tools.reply_state_wiring import annotate_rows_with_reply_state, build_draft_scan_status
+from apple_mail_mcp.tools.reply_state_wiring import (
+    annotate_rows_with_reply_state,
+    build_draft_scan_status,
+    build_sent_reply_scan_status,
+)
 
 # Marker prefix for a diagnostic row smuggled through the text-only
 # AppleScript-to-Python channel, matching ``tools/search/records.py``. Reuse that
@@ -359,7 +364,9 @@ async def inbox_dashboard(
             row's ``has_draft`` is null and ``draft_scan.status`` is
             ``"skipped"``, with no extra AppleScript call. Every recent
             email always carries ``was_replied_to`` (Mail's native
-            property) regardless of this flag.
+            property) regardless of this flag. JSON mode independently adds
+            bounded Sent-header evidence as ``has_sent_reply`` and composite
+            ``reply_state``; UI mode does not run that extra scan.
 
     Note: Requires mcp-ui-server package and a compatible MCP client.
 
@@ -367,8 +374,9 @@ async def inbox_dashboard(
         UIResource with uri "ui://apple-mail/inbox-dashboard" containing
         an interactive HTML dashboard, or a structured dict when
         ``output_format="json"``. JSON mode's ``recent_emails`` rows always
-        carry ``was_replied_to`` (bool) and ``has_draft`` (bool or null);
-        the dict also gains a top-level ``draft_scan`` object:
+        carry raw ``was_replied_to`` / ``mail_was_replied_to``, nullable
+        ``has_sent_reply`` / ``reply_state``, and ``has_draft``;
+        the dict also carries top-level ``sent_reply_scan`` and ``draft_scan`` objects:
         ``{"status": "ok"|"error"|"skipped", "scanned": N, "accounts": [...]}``.
 
         An empty ``recent_emails`` is only trustworthy when ``errors`` is also
@@ -420,11 +428,16 @@ async def inbox_dashboard(
     )
 
     if output_format == "json":
+        sent_snapshots: dict[str, SentReplySnapshot] = {}
+        sent_accounts_requested: list[str] = []
         snapshots = annotate_rows_with_reply_state(
             recent_emails,
             runner=analytics.run_applescript,
             timeout=per_call_timeout,
             include_draft_state=include_draft_state,
+            include_sent_reply_state=True,
+            sent_snapshots=sent_snapshots,
+            sent_accounts_requested=sent_accounts_requested,
         )
         payload: dict[str, Any] = {
             "account": selected_account,
@@ -438,6 +451,7 @@ async def inbox_dashboard(
             # remains a trustworthy "no recent mail".
             "errors": list(dict.fromkeys(item["account"] for item in recent_errors)),
             "draft_scan": build_draft_scan_status(snapshots),
+            "sent_reply_scan": build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
             **disclosure,
         }
         if recent_errors:

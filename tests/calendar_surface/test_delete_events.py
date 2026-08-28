@@ -136,7 +136,17 @@ class _VanishingRecurringEngine(FakeReadEngine):
     (the second id-scoped ``fetch_window``) finds no surviving occurrences.
     """
 
-    def fetch_window(self, window, calendar_name, *, scan_cap, include_detail=False, event_ids=None, timeout=None):
+    def fetch_window(
+        self,
+        window,
+        calendar_name,
+        *,
+        scan_cap,
+        include_detail=False,
+        event_ids=None,
+        timeout=None,
+        selector_kind="calendar_object_reference",
+    ):
         rows, errs = super().fetch_window(
             window,
             calendar_name,
@@ -144,6 +154,7 @@ class _VanishingRecurringEngine(FakeReadEngine):
             include_detail=include_detail,
             event_ids=event_ids,
             timeout=timeout,
+            selector_kind=selector_kind,
         )
         if event_ids:
             if getattr(self, "_served", False):

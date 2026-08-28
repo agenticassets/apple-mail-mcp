@@ -25,8 +25,8 @@ from apple_mail_mcp.core import (
 )
 from apple_mail_mcp.core.reply_state import was_replied_fragment
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
+from apple_mail_mcp.tools import reply_state_wiring as _reply_state
 from apple_mail_mcp.tools import search
-from apple_mail_mcp.tools.reply_state_wiring import annotate_rows_with_reply_state, build_draft_scan_status
 from apple_mail_mcp.tools.search.records import (
     _format_search_records_text,
     _mailbox_error_texts,
@@ -166,12 +166,11 @@ def _fetch_email_record_by_id(
         item["content_status"] = (
             "truncated" if content_truncated else "available" if preview else "empty_or_unavailable"
         )
-        has_quoted = bool(
+        item["has_quoted_original"] = bool(
             re.search(r"On .+wrote:", preview, re.DOTALL)
             or re.search(r"(?m)^>", preview)
             or "-----Original Message-----" in preview
         )
-        item["has_quoted_original"] = has_quoted
     return item
 
 
@@ -357,8 +356,9 @@ def get_email_by_id(
             snapshot for the message's account and set ``has_draft`` on the
             item (true/false when the scan reached that account, null when it
             was skipped or errored). Set False to skip the Drafts scan
-            entirely (zero extra AppleScript calls); ``has_draft`` is then
-            always null and ``draft_scan.status`` is "skipped".
+            entirely. JSON mode independently runs a short bounded Sent scan
+            for composite reply state; text mode does not. ``has_draft`` is
+            null and ``draft_scan.status`` is "skipped" when disabled.
 
     Returns:
         One matching email as text (prefixed with `[REPLIED]` / `[HAS DRAFT]`
@@ -426,14 +426,18 @@ def get_email_by_id(
             return f"Error: {exc}"
         error_detail = {"mailbox": mailbox, "type": "read_error", "message": str(exc)}
 
-    snapshots = annotate_rows_with_reply_state(
+    sent_snapshots, sent_accounts_requested = _reply_state.new_sent_reply_scan()
+    snapshots = _reply_state.annotate_rows_with_reply_state(
         [item] if item is not None else [],
         runner=search.run_applescript,
         timeout=effective_timeout,
         include_draft_state=include_draft_state,
+        include_sent_reply_state=output_format == "json",
         date_field="received_date",
+        sent_snapshots=sent_snapshots,
+        sent_accounts_requested=sent_accounts_requested,
     )
-    draft_scan = build_draft_scan_status(snapshots)
+    draft_scan = _reply_state.build_draft_scan_status(snapshots)
 
     if output_format == "json":
         payload: dict[str, Any] = {
@@ -444,6 +448,7 @@ def get_email_by_id(
             "account": account,
             "mailbox": mailbox,
             "draft_scan": draft_scan,
+            "sent_reply_scan": _reply_state.build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
             "errors": _mailbox_error_texts([error_detail]) if error_detail else [],
         }
         if error_detail:
@@ -493,7 +498,8 @@ def get_email_by_ids(
             capped at 5 accounts) and set `has_draft` on every item
             (true/false when scanned, null when the scan was skipped or
             errored, never silently False). Set False to skip the Drafts
-            scan entirely (zero extra AppleScript calls).
+            scan entirely. JSON mode independently runs one short bounded Sent
+            scan for composite reply state; text mode does not.
 
     Returns:
         JSON with requested_ids, items in requested order, missing_ids, invalid_ids,
@@ -548,14 +554,18 @@ def get_email_by_ids(
     ordered_items = [records_by_id[mid] for mid in normalized_ids if mid in records_by_id]
     missing_ids = [mid for mid in normalized_ids if mid not in records_by_id]
 
-    snapshots = annotate_rows_with_reply_state(
+    sent_snapshots, sent_accounts_requested = _reply_state.new_sent_reply_scan()
+    snapshots = _reply_state.annotate_rows_with_reply_state(
         ordered_items,
         runner=search.run_applescript,
         timeout=effective_timeout,
         include_draft_state=include_draft_state,
+        include_sent_reply_state=output_format == "json",
         date_field="received_date",
+        sent_snapshots=sent_snapshots,
+        sent_accounts_requested=sent_accounts_requested,
     )
-    draft_scan = build_draft_scan_status(snapshots)
+    draft_scan = _reply_state.build_draft_scan_status(snapshots)
     error_texts = _mailbox_error_texts(mailbox_errors)
 
     if output_format == "json":
@@ -571,6 +581,7 @@ def get_email_by_ids(
                 "include_content": include_content,
                 "chunk_size": MAX_WHOSE_IDS,
                 "draft_scan": draft_scan,
+                "sent_reply_scan": _reply_state.build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
                 "errors": error_texts,
             }
         )

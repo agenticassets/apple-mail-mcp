@@ -2,9 +2,9 @@
 
 **Tasks layout:** Agents MUST follow [`tasks/CLAUDE.md`](CLAUDE.md) § Agent requirements (`active/` · `reference/` · `archive/` only; local gates enforce).
 
-**Current branch:** `docs/pin-export-compile-check` — one commit open in review. `chore/public-directory-listings` and `docs/context-accuracy-sweep` are both merged; start any unrelated lane from a fresh branch off `origin/main`.
+**Current branch:** `fix/calendar-read-and-reply-state` from current `origin/main` at `79141b1`; 3.12.1 implementation and live acceptance are complete, pending final release gate, PR, and Cayman merge approval.
 
-**Main state:** `main` is at `3ad5956`, the merge of PR #101 (context-accuracy sweep across every `CLAUDE.md` hub, guide, and skill, plus emptying the AppleScript compile gate's unreachable-module ledger). Before it: `4a143fc` (PR #99, native-reply editor drain and the typing-budget split) and `1050e8e` (PR #97, the directory-listing work). **v3.12.0 is merged but NOT yet tagged** — two more PRs (#99, #101) have landed on top of the #97 merge, so the tag must point at the current `main` tip carrying `version = "3.12.0"`, not at any earlier merge; confirm the SHA against `origin/main` at tag time rather than trusting a SHA written here. Vendor directory forms are still unfiled and are Cayman's to sign in for ([`active/public-directory-listings/submission-packet-2026-08-24.md`](active/public-directory-listings/submission-packet-2026-08-24.md), `AGENTIC-2492`). Prior: v3.11.9 tagged on `9ba502e`, the merge of PR #96 (cross-process Mail lock). v3.11.8 (PR #94, `f1264c6`) closed the post-3.11.7 defect audit. GitHub Release `v3.11.9` carries the `.mcpb`, `.zip`, and `.plugin` artifacts; twelve repo topics and private vulnerability reporting are live.
+**Main state:** `main` and `origin/main` are at `79141b1`. Tag `v3.12.0` points at `df5e034`; the later main commit is documentation-only. The current branch prepares 3.12.1 and carries no merge, tag, release, or installed-plugin promotion yet.
 
 ## What the merged v3.12.0 lane did
 
@@ -24,7 +24,7 @@ Goal: `apple-mail` visible inside each client's own plugin browser (Claude Deskt
 
 **Verify through `.venv/bin/apple-mail`, never through MCP tools.** MCP tools execute the *installed* plugin, which returns a clean answer from stale code until the marketplace promotes a payload.
 
-**Next action:** **await Cayman's merge approval**; merging is founder-gated and no approval has been given. After merge, from clean `main`: `bash tools/gates/source-release-gate.sh`, `bash tools/gates/create-release-tag.sh --confirm-create` (the stamp binds HEAD's SHA, so stamp *after* the merge), `git push origin v3.12.0`, GitHub Release with the three artifacts, `bash tools/gates/marketplace-handoff.sh v3.12.0`, then file the three forms from the packet (each needs a signed-in browser session).
+**Next action:** finish the 3.12.1 release gate, push `fix/calendar-read-and-reply-state`, open the PR, and await Cayman merge approval. After merge, rerun the source release gate on clean `main`, create signed tag `v3.12.1`, publish all three artifacts, and run the marketplace handoff.
 
 **Roadmap:** [`reference/roadmap-2026-07-10.md`](reference/roadmap-2026-07-10.md). Next three builds: port `get_email_source` forward, add junk + colored-flag actions to `update_email_status`, then the typed-`AppleScriptError` error-contract pass.
 

@@ -20,13 +20,14 @@ from typing import Any, Protocol
 
 from apple_mail_mcp.backend.base import ToolError
 from apple_mail_mcp.calendar_core import eventkit as _eventkit
-from apple_mail_mcp.calendar_core.records import parse_calendar_rows, parse_event_rows
+from apple_mail_mcp.calendar_core.records import parse_calendar_reference_ids, parse_calendar_rows, parse_event_rows
 from apple_mail_mcp.calendar_core.scripts_read import (
     applescript_date_block,
     build_uid_condition,
     count_events_script,
     fetch_recurring_masters_script,
     fetch_window_events_script,
+    list_calendar_reference_ids_script,
     list_calendars_script,
 )
 from apple_mail_mcp.calendar_core.scripts_write import (
@@ -66,6 +67,7 @@ class CalendarReadEngine(Protocol):
         include_detail: bool = False,
         event_ids: list[str] | None = None,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> tuple[list[dict[str, Any]], list[str]]: ...
 
     def fetch_recurring_masters(
@@ -75,6 +77,7 @@ class CalendarReadEngine(Protocol):
         *,
         include_detail: bool = False,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> tuple[list[dict[str, Any]], list[str]]: ...
 
 
@@ -87,8 +90,36 @@ def _host_tz() -> Any:
 
 
 def _is_access_denied(detail: str) -> bool:
-    """True when a Calendar write error signals macOS Automation denial (-1743)."""
+    """True when a Calendar error signals macOS Automation denial (-1743)."""
     return "-1743" in detail or "not authorized" in detail.lower()
+
+
+def _calendar_access_denied_error(detail: str) -> ToolError:
+    return ToolError(
+        code="CALENDAR_ACCESS_DENIED",
+        message=f"macOS denied Apple Events automation of Calendar.app: {detail}",
+        remediation={
+            "pane": "System Settings > Privacy & Security > Automation",
+            "note": "Enable Calendar under the host app that launches this server, then retry.",
+        },
+    )
+
+
+def _calendar_selector_error(detail: str) -> ToolError | None:
+    marker = detail.rsplit("|||", 1)[-1].strip()
+    if marker == "AMBIGUOUS_CALENDAR_SELECTOR":
+        return ToolError(
+            code="AMBIGUOUS_CALENDAR_SELECTOR",
+            message="The exact calendar name no longer identifies one unique calendar; nothing was changed.",
+            remediation={"preferred": "Call list_calendars again and use a stable calendar_id."},
+        )
+    if marker == "CALENDAR_NOT_FOUND":
+        return ToolError(
+            code="CALENDAR_NOT_FOUND",
+            message="The resolved calendar no longer exists; nothing was changed.",
+            remediation={"preferred": "Call list_calendars again and retry with its current calendar_id."},
+        )
+    return None
 
 
 def _map_write_error(result: str) -> str:
@@ -111,14 +142,10 @@ def _map_write_error(result: str) -> str:
     if result.startswith("ERROR_CALENDAR_WRITE|||"):
         detail = result.split("|||", 1)[1]
         if _is_access_denied(detail):
-            raise ToolError(
-                code="CALENDAR_ACCESS_DENIED",
-                message=f"macOS denied Apple Events automation of Calendar.app: {detail}",
-                remediation={
-                    "pane": "System Settings > Privacy & Security > Automation",
-                    "note": "Enable Calendar under the host app that launches this server, then retry.",
-                },
-            )
+            raise _calendar_access_denied_error(detail)
+        selector_error = _calendar_selector_error(detail)
+        if selector_error is not None:
+            raise selector_error
         raise ToolError(
             code="CALENDAR_WRITE_FAILED",
             message=f"Calendar.app rejected the write: {detail}",
@@ -140,6 +167,26 @@ def _single_line_write(script: str, *, timeout: int, ok_prefix: str, label: str)
     raise Exception(f"Unexpected {label} result: {result!r}")
 
 
+def _raise_calendar_read_failure(raw: str) -> None:
+    """Turn a target-level Calendar.app failure into a structured engine error."""
+    for line in raw.splitlines():
+        if line.startswith("ERROR_CALENDAR|||"):
+            detail = line.split("|||", 1)[1]
+            if _is_access_denied(detail):
+                raise _calendar_access_denied_error(detail)
+            selector_error = _calendar_selector_error(detail)
+            if selector_error is not None:
+                raise selector_error
+            raise ToolError(
+                code="CALENDAR_READ_FAILED",
+                message=f"Calendar.app could not read the resolved calendar: {detail}",
+                remediation={
+                    "preferred": "Call list_calendars again, then retry with its current calendar_id.",
+                    "fallback": "If stable identifiers are unavailable, use an exact unique calendar name.",
+                },
+            )
+
+
 class AppleScriptCalendarEngine:
     """Guaranteed engine: Calendar.app AppleScript via ``run_applescript``."""
 
@@ -156,8 +203,18 @@ class AppleScriptCalendarEngine:
 
     def list_calendars(self, *, timeout: int | None = None) -> tuple[list[dict[str, Any]], list[str]]:
         seconds = _effective_timeout(timeout)
-        raw = run_applescript(list_calendars_script(timeout_seconds=seconds), timeout=seconds)
-        return parse_calendar_rows(raw)
+        reference_raw = run_applescript(list_calendar_reference_ids_script(timeout_seconds=seconds), timeout=seconds)
+        calendar_ids, identifier_errors = parse_calendar_reference_ids(reference_raw)
+        raw = run_applescript(
+            list_calendars_script(timeout_seconds=seconds, calendar_ids=calendar_ids or None), timeout=seconds
+        )
+        calendars, errors = parse_calendar_rows(raw)
+        if identifier_errors or (not calendar_ids and calendars):
+            errors.append(
+                "Stable Calendar object references were unavailable; only exact unique-name fallback is safe."
+            )
+        errors.extend(identifier_errors)
+        return calendars, errors
 
     def fetch_window(
         self,
@@ -168,6 +225,7 @@ class AppleScriptCalendarEngine:
         include_detail: bool = False,
         event_ids: list[str] | None = None,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         require_issued_window(window)
         seconds = _effective_timeout(timeout)
@@ -179,8 +237,10 @@ class AppleScriptCalendarEngine:
             timeout_seconds=seconds,
             uid_condition=build_uid_condition(event_ids) if event_ids else "",
             include_detail=include_detail,
+            selector_kind=selector_kind,
         )
         raw = run_applescript(script, timeout=seconds)
+        _raise_calendar_read_failure(raw)
         return parse_event_rows(raw, _host_tz())
 
     def fetch_recurring_masters(
@@ -190,6 +250,7 @@ class AppleScriptCalendarEngine:
         *,
         include_detail: bool = False,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         require_issued_window(window)
         seconds = _effective_timeout(timeout)
@@ -206,20 +267,35 @@ class AppleScriptCalendarEngine:
             scan_cap=int(CALENDAR_BOUNDS["RECURRING_MASTER_SCAN_CAP"]),
             timeout_seconds=seconds,
             include_detail=include_detail,
+            selector_kind=selector_kind,
         )
         raw = run_applescript(script, timeout=seconds)
+        _raise_calendar_read_failure(raw)
         return parse_event_rows(raw, _host_tz())
 
-    def count_events(self, calendar_id: str, *, timeout: int | None = None) -> int:
+    def count_events(
+        self,
+        calendar_id: str,
+        *,
+        timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
+    ) -> int:
         seconds = _effective_timeout(timeout)
         raw = run_applescript(
-            count_events_script(calendar_id=calendar_id, timeout_seconds=seconds), timeout=seconds
+            count_events_script(calendar_id=calendar_id, timeout_seconds=seconds, selector_kind=selector_kind),
+            timeout=seconds,
         ).strip()
         if raw.startswith("COUNT|||"):
             try:
                 return int(raw.split("|||", 1)[1])
             except ValueError:
-                return 0
+                raise ToolError(
+                    code="CALENDAR_READ_FAILED",
+                    message="Calendar.app returned a malformed event count; the calendar was not treated as empty.",
+                    remediation={"preferred": "Call list_calendars and retry the delete preview."},
+                ) from None
+        if raw.startswith("ERROR_CALENDAR|||"):
+            _map_write_error(f"ERROR_CALENDAR_WRITE|||{raw.split('|||', 1)[1]}")
         _map_write_error(raw if raw.startswith("ERROR_") else f"ERROR_CALENDAR_WRITE|||{raw}")
         return 0  # pragma: no cover - _map_write_error always raises above
 
@@ -240,6 +316,7 @@ class AppleScriptCalendarEngine:
         alarms_minutes_before: list[int] | None = None,
         attendees: list[str] | None = None,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> str:
         seconds = _effective_timeout(timeout)
         set_lines = build_event_set_lines(
@@ -259,6 +336,7 @@ class AppleScriptCalendarEngine:
             end_block=applescript_date_block("windowEnd", end, all_day=all_day),
             set_lines=set_lines,
             timeout_seconds=seconds,
+            selector_kind=selector_kind,
         )
         return _single_line_write(script, timeout=seconds, ok_prefix="CREATED", label="create_event")
 
@@ -270,6 +348,7 @@ class AppleScriptCalendarEngine:
         window: CalendarWindow,
         set_lines: str,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> str:
         require_issued_window(window)
         seconds = _effective_timeout(timeout)
@@ -280,6 +359,7 @@ class AppleScriptCalendarEngine:
             end_block=applescript_date_block("windowEnd", window.end),
             set_lines=set_lines,
             timeout_seconds=seconds,
+            selector_kind=selector_kind,
         )
         return _single_line_write(script, timeout=seconds, ok_prefix="UPDATED", label="update_event")
 
@@ -290,6 +370,7 @@ class AppleScriptCalendarEngine:
         event_ids: list[str],
         window: CalendarWindow,
         timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
     ) -> tuple[list[dict[str, str]], list[str]]:
         """Delete exact ids; returns (deleted rows, errors)."""
         require_issued_window(window)
@@ -305,6 +386,7 @@ class AppleScriptCalendarEngine:
                 start_block=applescript_date_block("windowStart", window.start),
                 end_block=applescript_date_block("windowEnd", window.end),
                 timeout_seconds=seconds,
+                selector_kind=selector_kind,
             )
             raw = run_applescript(script, timeout=seconds)
             if raw.startswith("ERROR_READONLY|||"):
@@ -325,6 +407,9 @@ class AppleScriptCalendarEngine:
                     # so re-route -1743/not-authorized through _map_write_error.
                     if _is_access_denied(message):
                         _map_write_error(f"ERROR_CALENDAR_WRITE|||{message}")
+                    selector_error = _calendar_selector_error(message)
+                    if selector_error is not None:
+                        raise selector_error
                     errors.append(message)
         return deleted, errors
 
@@ -333,14 +418,32 @@ class AppleScriptCalendarEngine:
         script = create_calendar_script(calendar_name=name, timeout_seconds=seconds)
         return _single_line_write(script, timeout=seconds, ok_prefix="CREATED_CAL", label="create_calendar")
 
-    def rename_calendar(self, *, calendar_id: str, new_name: str, timeout: int | None = None) -> str:
+    def rename_calendar(
+        self,
+        *,
+        calendar_id: str,
+        new_name: str,
+        timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
+    ) -> str:
         seconds = _effective_timeout(timeout)
-        script = rename_calendar_script(calendar_id=calendar_id, new_name=new_name, timeout_seconds=seconds)
+        script = rename_calendar_script(
+            calendar_id=calendar_id,
+            new_name=new_name,
+            timeout_seconds=seconds,
+            selector_kind=selector_kind,
+        )
         return _single_line_write(script, timeout=seconds, ok_prefix="RENAMED_CAL", label="rename_calendar")
 
-    def delete_calendar(self, *, calendar_id: str, timeout: int | None = None) -> str:
+    def delete_calendar(
+        self,
+        *,
+        calendar_id: str,
+        timeout: int | None = None,
+        selector_kind: str = "calendar_object_reference",
+    ) -> str:
         seconds = _effective_timeout(timeout)
-        script = delete_calendar_script(calendar_id=calendar_id, timeout_seconds=seconds)
+        script = delete_calendar_script(calendar_id=calendar_id, timeout_seconds=seconds, selector_kind=selector_kind)
         return _single_line_write(script, timeout=seconds, ok_prefix="DELETED_CAL", label="delete_calendar")
 
 

@@ -5,6 +5,7 @@ import types
 from datetime import datetime, timezone
 
 import pytest
+from apple_mail_mcp.backend.base import ToolError
 from apple_mail_mcp.calendar_core import eventkit as eventkit_mod
 from apple_mail_mcp.calendar_core.eventkit import EventKitCalendarEngine, eventkit_status
 from apple_mail_mcp.calendar_core.window import bounded_calendar_window
@@ -78,10 +79,11 @@ class _NSDateStub:
 
 
 class _CalStub:
-    def __init__(self, name, identifier="CAL-ID", writable=True):
+    def __init__(self, name, identifier="CAL-ID", writable=True, source=None):
         self._name = name
         self._id = identifier
         self._writable = writable
+        self._source = source
 
     def title(self):
         return self._name
@@ -91,6 +93,17 @@ class _CalStub:
 
     def allowsContentModifications(self):
         return self._writable
+
+    def source(self):
+        return self._source
+
+
+class _SourceStub:
+    def title(self):
+        return "Example Account"
+
+    def sourceIdentifier(self):
+        return "SOURCE-ID"
 
 
 class _EventStub:
@@ -191,11 +204,27 @@ class TestEventKitEngine:
             {
                 "calendar_id": "CAL-ID",
                 "id_kind": "calendarIdentifier",
+                "identifier_diagnostic": "eventkit_calendar_identifier",
                 "name": "Work",
                 "writable": True,
                 "description": None,
+                "source_title": None,
+                "source_identifier": None,
             }
         ]
+
+    def test_list_calendars_maps_source_metadata(self, monkeypatch):
+        engine, _store = _engine(
+            monkeypatch,
+            events=[],
+            calendars=[_CalStub("Work", source=_SourceStub())],
+        )
+
+        calendars, errors = engine.list_calendars()
+
+        assert errors == []
+        assert calendars[0]["source_title"] == "Example Account"
+        assert calendars[0]["source_identifier"] == "SOURCE-ID"
 
     def test_default_calendar_name(self, monkeypatch):
         engine, _store = _engine(monkeypatch, events=[])
@@ -215,10 +244,21 @@ class TestEventKitEngine:
         )
         window = bounded_calendar_window(start="2026-07-09", end="2026-07-17", timezone_name="UTC")
 
-        records, errors = engine.fetch_window(window, "CAL-MISSING", scan_cap=300)
+        with pytest.raises(ToolError) as exc:
+            engine.fetch_window(window, "CAL-MISSING", scan_cap=300)
 
-        assert records == []
-        assert errors
+        assert exc.value.code == "CALENDAR_NOT_FOUND"
+        assert store.predicates == []
+
+    def test_fetch_window_duplicate_name_fallback_fails_closed(self, monkeypatch):
+        calendars = [_CalStub("Shared", "CAL-A"), _CalStub("Shared", "CAL-B")]
+        engine, store = _engine(monkeypatch, events=[], calendars=calendars)
+        window = bounded_calendar_window(start="2026-07-09", end="2026-07-17", timezone_name="UTC")
+
+        with pytest.raises(ToolError) as exc:
+            engine.fetch_window(window, "Shared", scan_cap=300, selector_kind="name")
+
+        assert exc.value.code == "AMBIGUOUS_CALENDAR_SELECTOR"
         assert store.predicates == []
 
     def test_fetch_window_maps_records(self, monkeypatch):

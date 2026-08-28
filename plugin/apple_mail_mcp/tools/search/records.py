@@ -13,6 +13,7 @@ from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
 from apple_mail_mcp.constants import SCAN_BOUNDS
 from apple_mail_mcp.core import AppleScriptTimeout, escape_applescript
 from apple_mail_mcp.core.reply_state import reply_state_tags
+from apple_mail_mcp.tools.reply_state_wiring import sent_reply_scan_warning
 
 MONTH_NAMES = [
     "January",
@@ -324,6 +325,7 @@ def _build_search_response(
     include_content_hint: bool = False,
     body_text_hint: bool = False,
     draft_scan: dict[str, Any] | None = None,
+    sent_reply_scan: dict[str, Any] | None = None,
 ) -> str:
     """Return either JSON or text for search results.
 
@@ -416,6 +418,8 @@ def _build_search_response(
             payload["error_details"] = error_details
         if draft_scan is not None:
             payload["draft_scan"] = draft_scan
+        if sent_reply_scan is not None:
+            payload["sent_reply_scan"] = sent_reply_scan
         return json.dumps(payload)
 
     text_result = _format_search_records_text(
@@ -446,6 +450,9 @@ def _build_search_response(
         text_result = f"WARNING: {CONTENT_PREVIEW_SEARCH_HINT}\n" + text_result
     if body_text_hint:
         text_result = f"WARNING: {BODY_TEXT_SEARCH_HINT}\n" + text_result
+    sent_warning = sent_reply_scan_warning(sent_reply_scan)
+    if sent_warning:
+        text_result = f"WARNING: {sent_warning}\n" + text_result
     return text_result
 
 

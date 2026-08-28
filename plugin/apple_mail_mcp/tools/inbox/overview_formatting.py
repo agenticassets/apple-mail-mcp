@@ -9,7 +9,7 @@ name here is re-exported through the ``inbox`` facade, so the existing
 from typing import Any
 
 from apple_mail_mcp.core.reply_state import reply_state_tags
-from apple_mail_mcp.tools.reply_state_wiring import build_draft_scan_status
+from apple_mail_mcp.tools.reply_state_wiring import build_draft_scan_status, build_sent_reply_scan_status
 from apple_mail_mcp.tools.unread_provenance import (
     unread_count_disclosure,
     unread_count_text_footer,
@@ -186,6 +186,7 @@ def _overview_json_error(
     message: str | None = None,
     errors: list[str] | None = None,
     draft_scan: dict[str, Any] | None = None,
+    sent_reply_scan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "error": error,
@@ -199,6 +200,7 @@ def _overview_json_error(
         "suggestions": [],
         "errors": errors or [],
         "draft_scan": draft_scan if draft_scan is not None else build_draft_scan_status({}),
+        "sent_reply_scan": sent_reply_scan if sent_reply_scan is not None else build_sent_reply_scan_status({}),
         **unread_count_disclosure(),
     }
     if account is not None:
@@ -218,6 +220,7 @@ def _format_overview_json(
     include_suggestions: bool = True,
     max_recent: int = 10,
     draft_scan: dict[str, Any] | None = None,
+    sent_reply_scan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return structured overview payload for JSON mode.
 
@@ -266,6 +269,7 @@ def _format_overview_json(
         "suggestions": _overview_suggestions(total_unread) if include_suggestions else [],
         "errors": errors,
         "draft_scan": draft_scan if draft_scan is not None else build_draft_scan_status({}),
+        "sent_reply_scan": sent_reply_scan if sent_reply_scan is not None else build_sent_reply_scan_status({}),
         **envelope_disclosure,
     }
     if account is not None:

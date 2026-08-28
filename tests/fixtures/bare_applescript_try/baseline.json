@@ -14,7 +14,7 @@
       "bare": 1
     },
     "plugin/apple_mail_mcp/calendar_core/scripts_read.py": {
-      "bare": 7
+      "bare": 6
     },
     "plugin/apple_mail_mcp/calendar_core/scripts_write.py": {
       "bare": 2,

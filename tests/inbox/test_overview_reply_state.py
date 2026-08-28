@@ -25,7 +25,7 @@ def _overview_payload(replied_token: str) -> str:
     return "\n".join(
         [
             "HEADER|||Work|||1|||10",
-            f"RECENT|||Budget|||alice@example.com|||Fri, May 23, 2026|||false|||{replied_token}",
+            f"RECENT|||Budget|||alice@example.com|||Fri, May 23, 2026|||false|||{replied_token}|||<budget@example.com>",
         ]
     )
 
@@ -34,6 +34,8 @@ def _fake_runner(overview_raw: str, draft_raw: str | None = None):
     def runner(script: str, timeout: int | None = None) -> str:
         if "draftsMailbox" in script:
             return draft_raw if draft_raw is not None else "COUNT|||0\nTOTAL|||0"
+        if "sentMailbox" in script:
+            return "SCANNED|||0\nTOTAL|||0"
         return overview_raw
 
     return runner
@@ -53,6 +55,23 @@ class OverviewWasRepliedTests(unittest.TestCase):
         self.assertTrue(recent["was_replied_to"])
         self.assertIsNone(recent["has_draft"])
         self.assertEqual(result["draft_scan"]["status"], "skipped")
+
+    def test_json_sent_header_match_sets_composite_reply_state(self):
+        def runner(script: str, timeout: int | None = None) -> str:
+            if "sentMailbox" in script:
+                return "REPLY|||<budget@example.com>\nSCANNED|||1\nTOTAL|||1"
+            return _overview_payload("false")
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=runner):
+            result = _run(
+                inbox_tools.get_inbox_overview(account="Work", output_format="json", include_draft_state=False)
+            )
+
+        recent = result["accounts"][0]["recent"][0]
+        self.assertFalse(recent["mail_was_replied_to"])
+        self.assertTrue(recent["has_sent_reply"])
+        self.assertTrue(recent["reply_state"])
+        self.assertEqual(result["sent_reply_scan"]["status"], "ok")
 
     def test_text_mode_tags_replied_recent_line(self):
         with patch(
@@ -75,6 +94,19 @@ class OverviewWasRepliedTests(unittest.TestCase):
             )
 
         self.assertNotIn("[REPLIED]", result)
+
+    def test_text_mode_does_not_scan_sent_headers(self):
+        calls: list[str] = []
+
+        def runner(script: str, timeout: int | None = None) -> str:
+            calls.append(script)
+            return _overview_payload("false")
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=runner):
+            _run(inbox_tools.get_inbox_overview(account="Work", output_format="text", include_draft_state=False))
+
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("sentMailbox", calls[0])
 
 
 class OverviewHasDraftTests(unittest.TestCase):
@@ -116,6 +148,8 @@ class OverviewHasDraftTests(unittest.TestCase):
 
         def runner(script: str, timeout: int | None = None) -> str:
             calls.append(script)
+            if "sentMailbox" in script:
+                return "SCANNED|||0\nTOTAL|||0"
             return _overview_payload("false")
 
         with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=runner):
@@ -123,7 +157,7 @@ class OverviewHasDraftTests(unittest.TestCase):
                 inbox_tools.get_inbox_overview(account="Work", output_format="json", include_draft_state=False)
             )
 
-        self.assertEqual(len(calls), 1, "no Drafts-snapshot AppleScript call should run")
+        self.assertEqual(len(calls), 2, "only overview and Sent-reply scans should run; no Drafts scan")
         self.assertEqual(result["draft_scan"]["status"], "skipped")
 
 

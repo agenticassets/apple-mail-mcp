@@ -15,6 +15,7 @@ from apple_mail_mcp.core import (
     inbox_mailbox_script,
     inject_preferences,
 )
+from apple_mail_mcp.core.replied import SentReplySnapshot
 from apple_mail_mcp.core.reply_state import DraftsSnapshot, was_replied_fragment
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
 from apple_mail_mcp.tools import inbox
@@ -23,7 +24,11 @@ from apple_mail_mcp.tools.inbox.overview_formatting import (
     _format_overview_json,
     _overview_json_error,
 )
-from apple_mail_mcp.tools.reply_state_wiring import annotate_rows_with_reply_state, build_draft_scan_status
+from apple_mail_mcp.tools.reply_state_wiring import (
+    annotate_rows_with_reply_state,
+    build_draft_scan_status,
+    build_sent_reply_scan_status,
+)
 
 # ``max_recent`` is a plain tool argument with no client-side validation, so a
 # caller can hand this tool any integer. That value used to go straight into
@@ -74,7 +79,7 @@ def _build_overview_one_account_script(
         accountName|||unreadCount|||totalCount
         MAILBOX|||name|||unreadCount
         MAILBOX|||name/subName|||subUnread
-        RECENT|||subject|||sender|||date|||read|||wasRepliedToken
+        RECENT|||subject|||sender|||date|||read|||wasRepliedToken|||internetMessageId
         MAILBOX_CAPPED|||accountName|||cap
         ...
 
@@ -110,7 +115,14 @@ def _build_overview_one_account_script(
                         set messageDate to date received of aMessage
                         set messageRead to read status of aMessage
                         {was_replied_fragment()}
-                        set end of resultLines to "RECENT|||" & messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & wasRepliedToken
+                        set internetMessageId to ""
+                        try
+                            set internetMessageId to message id of aMessage as string
+                        on error errMsg
+                            set internetMessageId to ""
+                            set end of resultLines to "RECENT_ERROR|||message id unavailable: " & errMsg
+                        end try
+                        set end of resultLines to "RECENT|||" & messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & wasRepliedToken & "|||" & internetMessageId
                     end try
                 end repeat
         """
@@ -242,8 +254,11 @@ def _parse_overview_account(raw: str) -> dict[str, Any]:
                     "date": parts[3],
                     "is_read": parts[4].strip().lower() == "true",
                     "was_replied_to": len(parts) > 5 and parts[5].strip().lower() == "true",
+                    "internet_message_id": parts[6] if len(parts) > 6 else "",
                 }
             )
+        elif tag == "RECENT_ERROR" and len(parts) >= 2:
+            parse_errors.append("|||".join(parts[1:]))
         elif tag == "FATAL" and len(parts) >= 2:
             result["error"] = parts[1]
     # Unread messages counted in the newest-first recent slice are a strict
@@ -331,13 +346,16 @@ async def get_inbox_overview(
             ``was_replied_to`` is always present regardless (native
             property, no extra call). False skips the Drafts scan: JSON's
             ``draft_scan.status`` becomes ``"skipped"``, ``has_draft`` null.
+            JSON mode independently runs short bounded Sent-header scans for
+            composite ``reply_state``; text and compact modes do not.
 
     Returns:
         Comprehensive overview including unread counts, optional mailbox
         structure, recent preview, and optional AI suggestions. JSON mode
-        returns a structured dict whose recent-email rows always carry
-        ``was_replied_to`` (bool) and ``has_draft`` (bool or null), plus a
-        top-level ``draft_scan`` object: ``{"status": "ok"|"error"|
+        returns a structured dict whose recent-email rows carry raw
+        ``was_replied_to`` / ``mail_was_replied_to``, nullable
+        ``has_sent_reply`` / composite ``reply_state``, and ``has_draft``, plus
+        top-level ``sent_reply_scan`` and ``draft_scan`` objects. ``draft_scan`` is ``{"status": "ok"|"error"|
         "skipped", "scanned": N, "accounts": [...]}``. Text mode tags
         matching recent lines with ``[REPLIED]``/``[HAS DRAFT]``.
 
@@ -457,6 +475,8 @@ async def get_inbox_overview(
     # snapshot cache so a repeated account across calls is never re-scanned.
     draft_timeout = timeout if timeout is not None else 60
     snapshots: dict[str, DraftsSnapshot] = {}
+    sent_snapshots: dict[str, SentReplySnapshot] = {}
+    sent_accounts_requested: list[str] = []
     for parsed_acct_row in parsed:
         if parsed_acct_row.get("error"):
             continue
@@ -465,8 +485,11 @@ async def get_inbox_overview(
             runner=inbox.run_applescript,
             timeout=draft_timeout,
             include_draft_state=include_draft_state,
+            include_sent_reply_state=output_format == "json",
             account=parsed_acct_row.get("account"),
             snapshots=snapshots,
+            sent_snapshots=sent_snapshots,
+            sent_accounts_requested=sent_accounts_requested,
         )
     draft_scan = build_draft_scan_status(snapshots)
 
@@ -481,6 +504,7 @@ async def get_inbox_overview(
                 include_suggestions=include_suggestions,
                 max_recent=max_recent,
                 draft_scan=draft_scan,
+                sent_reply_scan=build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
             )
         )
 

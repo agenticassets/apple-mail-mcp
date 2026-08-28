@@ -1,4 +1,4 @@
-"""Shared reply-state row annotation: has_draft correlation + draft_scan aggregation.
+"""Shared reply-state annotation from native, Sent-header, and Draft evidence.
 
 Generic helper consumed by the inbox surface (``list_inbox_emails``,
 ``get_inbox_overview``), ``analytics/dashboard.py`` (``inbox_dashboard``),
@@ -31,11 +31,101 @@ from __future__ import annotations
 from typing import Any
 
 from apple_mail_mcp.core.applescript import AppleScriptRunner
+from apple_mail_mcp.core.replied import SentReplySnapshot, fetch_sent_reply_snapshot
 from apple_mail_mcp.core.reply_state import DraftsSnapshot, fetch_drafts_snapshot, resolve_has_draft
 
 # Multi-account fan-out never fetches more than this many Drafts snapshots
 # per call, mirroring the plan's "capped at 5 accounts" contract.
 MAX_DRAFT_SNAPSHOT_ACCOUNTS = 5
+MAX_SENT_REPLY_SNAPSHOT_ACCOUNTS = 5
+SENT_REPLY_SCAN_TIMEOUT = 30
+
+
+def bounded_sent_reply_timeout(timeout: int | None) -> int:
+    """Return the dedicated short timeout used for bounded Sent-header scans."""
+    return SENT_REPLY_SCAN_TIMEOUT if timeout is None else min(timeout, SENT_REPLY_SCAN_TIMEOUT)
+
+
+def new_sent_reply_scan() -> tuple[dict[str, SentReplySnapshot], list[str]]:
+    """Return typed snapshot and requested-account accumulators."""
+    return {}, []
+
+
+def build_sent_reply_scan_status(
+    snapshots: dict[str, SentReplySnapshot],
+    requested_accounts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Aggregate structured per-account Sent reply snapshots."""
+    requested = list(dict.fromkeys(requested_accounts or snapshots))
+    skipped_accounts = [account for account in requested if account not in snapshots]
+    account_limit_reached = bool(skipped_accounts)
+    if not snapshots and not requested:
+        return {
+            "status": "skipped",
+            "scanned": 0,
+            "total": 0,
+            "truncated": False,
+            "accounts": [],
+            "errors": [],
+            "account_limit_reached": False,
+            "skipped_account_count": 0,
+            "skipped_accounts": [],
+        }
+
+    accounts_detail: list[dict[str, Any]] = []
+    errors: list[str] = []
+    scanned_total = 0
+    total_messages = 0
+    any_truncated = False
+    any_error = False
+    for account, snapshot in snapshots.items():
+        accounts_detail.append(
+            {
+                "account": account,
+                "status": snapshot.status,
+                "scanned": snapshot.scanned,
+                "total": snapshot.total,
+                "truncated": snapshot.truncated,
+                "errors": list(snapshot.errors),
+            }
+        )
+        scanned_total += snapshot.scanned
+        total_messages += snapshot.total if snapshot.total is not None else snapshot.scanned
+        any_truncated = any_truncated or snapshot.truncated
+        any_error = any_error or snapshot.status != "ok"
+        errors.extend(f"{account}: {error}" for error in snapshot.errors)
+
+    return {
+        "status": "error" if any_error else "partial" if account_limit_reached else "ok",
+        "scanned": scanned_total,
+        "total": total_messages,
+        "truncated": any_truncated or account_limit_reached,
+        "accounts": accounts_detail,
+        "errors": errors,
+        "account_limit_reached": account_limit_reached,
+        "skipped_account_count": len(skipped_accounts),
+        "skipped_accounts": skipped_accounts,
+    }
+
+
+def sent_reply_scan_warning(scan: dict[str, Any] | None) -> str | None:
+    """Describe incomplete Sent evidence for text responses that consumed it."""
+    if not scan or scan.get("status") == "skipped":
+        return None
+    if scan.get("account_limit_reached"):
+        skipped = ", ".join(scan.get("skipped_accounts") or []) or "unknown accounts"
+        return (
+            "Sent reply-state scan reached the account limit and skipped "
+            f"{skipped}; unmatched messages from those accounts have unknown reply state."
+        )
+    if scan.get("status") == "error":
+        return "Sent reply-state scan failed or was incomplete; unmatched messages have unknown reply state."
+    if scan.get("truncated"):
+        return (
+            f"Sent reply-state scan examined {scan.get('scanned', 0)} of {scan.get('total', 0)} message(s); "
+            "unmatched messages have unknown reply state."
+        )
+    return None
 
 
 def build_draft_scan_status(snapshots: dict[str, DraftsSnapshot]) -> dict[str, Any]:
@@ -96,13 +186,17 @@ def annotate_rows_with_reply_state(
     runner: AppleScriptRunner,
     timeout: int,
     include_draft_state: bool = True,
+    include_sent_reply_state: bool = False,
     account: str | None = None,
     account_field: str = "account",
     date_field: str = "date",
     max_accounts: int = MAX_DRAFT_SNAPSHOT_ACCOUNTS,
     snapshots: dict[str, DraftsSnapshot] | None = None,
+    sent_snapshots: dict[str, SentReplySnapshot] | None = None,
+    sent_accounts_requested: list[str] | None = None,
+    sent_timeout: int | None = None,
 ) -> dict[str, DraftsSnapshot]:
-    """Annotate *rows* in place with ``has_draft``; return the snapshot cache used.
+    """Annotate rows with raw native state, bounded Sent evidence, and drafts.
 
     Every row gains a ``has_draft`` key: ``True``/``False`` when a Drafts
     snapshot for its account came back ``"ok"``, ``None`` when the scan was
@@ -131,6 +225,55 @@ def annotate_rows_with_reply_state(
     returned so the caller can pass it back in on the next call.
     """
     cache: dict[str, DraftsSnapshot] = {} if snapshots is None else snapshots
+    sent_cache: dict[str, SentReplySnapshot] = {} if sent_snapshots is None else sent_snapshots
+
+    for row in rows:
+        native_replied = bool(row.get("was_replied_to"))
+        row["was_replied_to"] = native_replied
+        row["mail_was_replied_to"] = native_replied
+        row["has_sent_reply"] = None
+        row["reply_state"] = True if native_replied else None
+
+    if include_sent_reply_state:
+        if account is not None:
+            sent_accounts_needed: list[str] = [account] if rows else []
+        else:
+            sent_accounts_needed = []
+            for row in rows:
+                if row.get("was_replied_to") or not str(row.get("internet_message_id") or "").strip():
+                    continue
+                row_account = row.get(account_field)
+                if row_account and row_account not in sent_accounts_needed:
+                    sent_accounts_needed.append(row_account)
+
+        if account is not None and not any(
+            not row.get("was_replied_to") and str(row.get("internet_message_id") or "").strip() for row in rows
+        ):
+            sent_accounts_needed = []
+
+        if sent_accounts_requested is not None:
+            for candidate_account in sent_accounts_needed:
+                if candidate_account not in sent_accounts_requested:
+                    sent_accounts_requested.append(candidate_account)
+
+        for candidate_account in sent_accounts_needed:
+            if candidate_account in sent_cache or len(sent_cache) >= MAX_SENT_REPLY_SNAPSHOT_ACCOUNTS:
+                continue
+            sent_cache[candidate_account] = fetch_sent_reply_snapshot(
+                candidate_account,
+                runner=runner,
+                timeout=sent_timeout if sent_timeout is not None else bounded_sent_reply_timeout(timeout),
+            )
+
+        for row in rows:
+            row_account = account if account is not None else row.get(account_field)
+            sent_snapshot = sent_cache.get(row_account) if row_account else None
+            has_sent_reply = sent_snapshot.matches(row.get("internet_message_id")) if sent_snapshot else None
+            row["has_sent_reply"] = has_sent_reply
+            if row["mail_was_replied_to"] or has_sent_reply is True:
+                row["reply_state"] = True
+            elif has_sent_reply is False:
+                row["reply_state"] = False
 
     if not include_draft_state:
         for row in rows:

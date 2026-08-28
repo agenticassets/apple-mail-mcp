@@ -24,6 +24,8 @@ class _Capture:
     def __call__(self, script, timeout=120):
         self.scripts.append(script)
         self.timeouts.append(timeout)
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -71,12 +73,17 @@ class TestEngineSelection:
 
 class TestAppleScriptEngineReads:
     def test_list_calendars_parses_rows(self, monkeypatch):
-        capture = _Capture("CAL|||UID-1|||Work|||true|||\nERROR_CALENDAR|||x|||boom")
+        capture = _Capture(
+            [
+                "calendar id UID-1",
+                "CAL|||UID-1|||Work|||true|||\nERROR_CALENDAR|||x|||boom",
+            ]
+        )
         monkeypatch.setattr(engine_mod, "run_applescript", capture)
         calendars, errors = AppleScriptCalendarEngine().list_calendars(timeout=30)
         assert calendars[0]["name"] == "Work"
         assert "boom" in errors[0]
-        assert capture.timeouts == [30]
+        assert capture.timeouts == [30, 30]
 
     def test_fetch_window_builds_bounded_script(self, monkeypatch):
         capture = _Capture("")
@@ -105,6 +112,36 @@ class TestAppleScriptEngineReads:
     def test_count_events(self, monkeypatch):
         monkeypatch.setattr(engine_mod, "run_applescript", _Capture("COUNT|||42"))
         assert AppleScriptCalendarEngine().count_events("Work") == 42
+
+    def test_malformed_count_fails_closed_instead_of_reporting_empty(self, monkeypatch):
+        monkeypatch.setattr(engine_mod, "run_applescript", _Capture("COUNT|||not-a-number"))
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().count_events("Work")
+
+        assert exc.value.code == "CALENDAR_READ_FAILED"
+
+    def test_read_access_denied_maps_to_access_denied(self, monkeypatch):
+        monkeypatch.setattr(
+            engine_mod,
+            "run_applescript",
+            _Capture("ERROR_CALENDAR|||error -1743 not authorized to send Apple events"),
+        )
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().fetch_window(_window(), "CAL-WORK", scan_cap=300)
+
+        assert exc.value.code == "CALENDAR_ACCESS_DENIED"
+        assert "Automation" in str(exc.value.remediation)
+
+    @pytest.mark.parametrize("marker", ["CALENDAR_NOT_FOUND", "AMBIGUOUS_CALENDAR_SELECTOR"])
+    def test_read_name_guard_markers_keep_structured_codes(self, monkeypatch, marker):
+        monkeypatch.setattr(engine_mod, "run_applescript", _Capture(f"ERROR_CALENDAR|||{marker}"))
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().fetch_window(_window(), "Work", scan_cap=300, selector_kind="name")
+
+        assert exc.value.code == marker
 
 
 class TestWriteErrorMapping:
@@ -140,6 +177,27 @@ class TestWriteErrorMapping:
             AppleScriptCalendarEngine().rename_calendar(calendar_id="CAL-A", new_name="B")
         assert exc.value.code == "CALENDAR_WRITE_FAILED"
         assert "boom" in exc.value.message
+
+    @pytest.mark.parametrize("marker", ["CALENDAR_NOT_FOUND", "AMBIGUOUS_CALENDAR_SELECTOR"])
+    def test_write_name_guard_markers_keep_structured_codes(self, monkeypatch, marker):
+        monkeypatch.setattr(engine_mod, "run_applescript", _Capture(f"ERROR_CALENDAR_WRITE|||{marker}"))
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().rename_calendar(calendar_id="Work", new_name="Renamed", selector_kind="name")
+
+        assert exc.value.code == marker
+
+    def test_count_name_guard_marker_is_not_zero_events(self, monkeypatch):
+        monkeypatch.setattr(
+            engine_mod,
+            "run_applescript",
+            _Capture("ERROR_CALENDAR|||Work|||AMBIGUOUS_CALENDAR_SELECTOR"),
+        )
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().count_events("Work", selector_kind="name")
+
+        assert exc.value.code == "AMBIGUOUS_CALENDAR_SELECTOR"
 
     def test_create_event_returns_uid(self, monkeypatch):
         monkeypatch.setattr(engine_mod, "run_applescript", _Capture("CREATED|||NEW-UID"))
@@ -179,3 +237,20 @@ class TestWriteErrorMapping:
         )
         assert deleted == []
         assert errors == ["event vanished"]
+
+    def test_delete_name_guard_marker_is_not_a_soft_error(self, monkeypatch):
+        monkeypatch.setattr(
+            engine_mod,
+            "run_applescript",
+            _Capture("ERROR_EVENT|||AMBIGUOUS_CALENDAR_SELECTOR"),
+        )
+
+        with pytest.raises(ToolError) as exc:
+            AppleScriptCalendarEngine().delete_events(
+                calendar_id="Work",
+                event_ids=["UID-1"],
+                window=_window(),
+                selector_kind="name",
+            )
+
+        assert exc.value.code == "AMBIGUOUS_CALENDAR_SELECTOR"

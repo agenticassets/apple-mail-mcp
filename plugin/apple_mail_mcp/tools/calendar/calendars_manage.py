@@ -161,7 +161,10 @@ def manage_calendars(
                     message=f"A calendar named {wanted!r} already exists; pick another new_name.",
                 )
             renamed = calendar_tools.get_write_engine().rename_calendar(
-                calendar_id=str(target["calendar_id"]), new_name=wanted, timeout=timeout
+                calendar_id=str(target["calendar_id"]),
+                new_name=wanted,
+                timeout=timeout,
+                selector_kind=str(target.get("id_kind") or "name"),
             )
             return finish(
                 {
@@ -181,7 +184,11 @@ def manage_calendars(
             return blocked
         target = _resolve_exact_target(name, calendar_id, timeout=timeout)
         write_engine = calendar_tools.get_write_engine()
-        event_count = write_engine.count_events(str(target["calendar_id"]), timeout=timeout)
+        event_count = write_engine.count_events(
+            str(target["calendar_id"]),
+            timeout=timeout,
+            selector_kind=str(target.get("id_kind") or "name"),
+        )
         if dry_run:
             payload_preview: dict[str, Any] = {
                 "action": "delete",
@@ -217,7 +224,11 @@ def manage_calendars(
                     ),
                 )
             )
-        deleted_name = write_engine.delete_calendar(calendar_id=str(target["calendar_id"]), timeout=timeout)
+        deleted_name = write_engine.delete_calendar(
+            calendar_id=str(target["calendar_id"]),
+            timeout=timeout,
+            selector_kind=str(target.get("id_kind") or "name"),
+        )
         return finish(
             {
                 "action": "delete",

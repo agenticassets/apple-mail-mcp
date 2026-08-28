@@ -5,6 +5,8 @@ so the ``patch('apple_mail_mcp.core.run_applescript')`` test seam reaches it.
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Literal
 
 from apple_mail_mcp import core
 from apple_mail_mcp.core.applescript import AppleScriptRunner, AppleScriptTimeout
@@ -19,6 +21,175 @@ logger = logging.getLogger(__name__)
 # Capped here to avoid per-message IMAP downloads on large Exchange inboxes.
 # Internal-only — not exposed as tool parameters.
 REPLIED_HEADER_READ_CAP = 10
+
+
+@dataclass(frozen=True)
+class SentReplySnapshot:
+    """Bounded Sent-header evidence, with explicit negative-evidence quality."""
+
+    status: Literal["ok", "error"]
+    replied_ids: frozenset[str] = frozenset()
+    scanned: int = 0
+    total: int | None = None
+    truncated: bool = False
+    errors: tuple[str, ...] = ()
+
+    def matches(self, message_id: str | None) -> bool | None:
+        """Return true for a match, false for a complete nonmatch, else unknown."""
+        if not message_id:
+            return None
+        normalized = _normalize_message_id(message_id)
+        if normalized in self.replied_ids:
+            return True
+        if self.status != "ok" or self.truncated:
+            return None
+        return False
+
+
+def _normalize_message_id(value: str) -> str:
+    token = value.strip()
+    if not token.startswith("<"):
+        token = "<" + token
+    if not token.endswith(">"):
+        token += ">"
+    return token
+
+
+def build_sent_reply_snapshot_script(account: str, sent_cap: int = REPLIED_HEADER_READ_CAP) -> str:
+    """Build a bounded Sent scan that reports coverage and per-message failures."""
+    escaped_account = escape_applescript(account)
+    scan_cap = min(max(sent_cap, 0), REPLIED_HEADER_READ_CAP)
+    sent_resolve = sent_mailbox_resolve_script("sentMailbox", "targetAccount")
+    return f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{escaped_account}"
+            {sent_resolve}
+            if sentMailbox is missing value then
+                return "ERROR|||Sent mailbox not found" & linefeed & "SCANNED|||0" & linefeed & "TOTAL|||0"
+            end if
+
+            set sentCount to count of messages of sentMailbox
+            set scanEnd to sentCount
+            if scanEnd > {scan_cap} then set scanEnd to {scan_cap}
+            set outputLines to {{}}
+            set scannedCount to 0
+            if scanEnd > 0 then
+                set sentMessages to messages 1 thru scanEnd of sentMailbox
+            else
+                set sentMessages to {{}}
+            end if
+
+            repeat with aSentMessage in sentMessages
+                set scannedCount to scannedCount + 1
+                try
+                    set msgHeaders to all headers of aSentMessage
+                    set AppleScript's text item delimiters to {{return, linefeed}}
+                    set headerLines to text items of msgHeaders
+                    set AppleScript's text item delimiters to ""
+                    repeat with headerLine in headerLines
+                        set headerLineText to headerLine as string
+                        set isReplyHeader to false
+                        ignoring case
+                            if headerLineText starts with "In-Reply-To:" then
+                                set isReplyHeader to true
+                            else if headerLineText starts with "References:" then
+                                set isReplyHeader to true
+                            end if
+                        end ignoring
+                        if isReplyHeader then
+                            set AppleScript's text item delimiters to "<"
+                            set ltParts to text items of headerLineText
+                            set AppleScript's text item delimiters to ""
+                            if (count of ltParts) > 1 then
+                                repeat with i from 2 to (count of ltParts)
+                                    set tokenText to item i of ltParts as string
+                                    set AppleScript's text item delimiters to ">"
+                                    set gtParts to text items of tokenText
+                                    set AppleScript's text item delimiters to ""
+                                    if (count of gtParts) > 1 then
+                                        set idValue to item 1 of gtParts as string
+                                        if idValue is not "" then set end of outputLines to "REPLY|||<" & idValue & ">"
+                                    end if
+                                end repeat
+                            end if
+                        end if
+                    end repeat
+                on error errMsg
+                    set end of outputLines to "ERROR|||Sent header read failed: " & errMsg
+                end try
+            end repeat
+
+            set end of outputLines to "SCANNED|||" & scannedCount
+            set end of outputLines to "TOTAL|||" & sentCount
+            set AppleScript's text item delimiters to linefeed
+            set outputText to outputLines as string
+            set AppleScript's text item delimiters to ""
+            return outputText
+        on error errMsg
+            return "ERROR|||Sent reply scan failed: " & errMsg & linefeed & "SCANNED|||0"
+        end try
+    end tell
+    '''
+
+
+def fetch_sent_reply_snapshot(
+    account: str,
+    sent_cap: int = REPLIED_HEADER_READ_CAP,
+    timeout: int | None = 60,
+    runner: AppleScriptRunner | None = None,
+) -> SentReplySnapshot:
+    """Fetch structured Sent evidence without converting failures to negatives."""
+    fn = runner if runner is not None else core.run_applescript
+    try:
+        raw = fn(build_sent_reply_snapshot_script(account, sent_cap), timeout=timeout)
+    except AppleScriptTimeout:
+        return SentReplySnapshot(status="error", errors=("Sent reply scan timed out",))
+    except Exception as exc:
+        logger.warning("Sent reply snapshot failed for account %r: %s: %s", account, type(exc).__name__, exc)
+        return SentReplySnapshot(status="error", errors=(f"{type(exc).__name__}: {exc}",))
+
+    replied_ids: set[str] = set()
+    errors: list[str] = []
+    scanned = 0
+    total: int | None = None
+    for line in raw.splitlines():
+        if line.startswith("REPLY|||"):
+            token = line.removeprefix("REPLY|||").strip()
+            if token:
+                replied_ids.add(_normalize_message_id(token))
+        elif line.startswith("ERROR|||"):
+            errors.append(line.removeprefix("ERROR|||").strip() or "Unknown Sent reply scan error")
+        elif line.startswith("SCANNED|||"):
+            try:
+                scanned = int(line.removeprefix("SCANNED|||").strip())
+            except ValueError:
+                errors.append("Invalid Sent reply scanned count")
+        elif line.startswith("TOTAL|||"):
+            try:
+                total = int(line.removeprefix("TOTAL|||").strip())
+            except ValueError:
+                errors.append("Invalid Sent reply total count")
+        else:
+            # Compatibility with the legacy ``fetch_replied_ids`` protocol,
+            # which returned one bracketed Message-ID per line without scan
+            # metadata. Positive evidence remains usable, while the missing
+            # total below keeps every nonmatch unknown.
+            token = line.strip()
+            if token.startswith("<") and token.endswith(">"):
+                replied_ids.add(_normalize_message_id(token))
+
+    if total is None:
+        errors.append("Sent reply scan did not report total count")
+    truncated = total is not None and scanned < total
+    return SentReplySnapshot(
+        status="error" if errors else "ok",
+        replied_ids=frozenset(replied_ids),
+        scanned=scanned,
+        total=total,
+        truncated=truncated,
+        errors=tuple(errors),
+    )
 
 
 def fetch_replied_ids_script(account: str, sent_cap: int = 200) -> str:
@@ -88,11 +259,7 @@ def fetch_replied_ids(
         if not token:
             continue
         # Normalize: ensure leading "<" and trailing ">"
-        if not token.startswith("<"):
-            token = "<" + token
-        if not token.endswith(">"):
-            token = token + ">"
-        ids.add(token)
+        ids.add(_normalize_message_id(token))
     return ids
 
 

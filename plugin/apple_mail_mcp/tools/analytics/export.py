@@ -73,7 +73,11 @@ def export_emails(
             Returns ``TARGET_SELECTOR_DEPRECATED`` when ``message_id`` is omitted.
         message_id: Exact numeric Apple Mail message id for single_email scope
         message_ids: Optional list of exact Apple Mail message ids to export
-        mailbox: Mailbox to export from (default: "INBOX")
+        mailbox: Mailbox to export from (default: "INBOX"). For ``thread``
+            scope it is only one candidate: the mailboxes actually searched
+            are derived from the thread's own records (Gmail's virtual
+            "All Mail" excluded), with this mailbox and the INBOX/Sent
+            fallbacks appended.
         save_directory: Directory to save exports (default: "~/Desktop")
         format: Export format: "txt", "html", or raw RFC 822 "eml"
             (default: "txt"). EML preserves Mail's source headers and MIME
@@ -106,7 +110,11 @@ def export_emails(
         timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
-        Confirmation message with export location
+        Confirmation message with export location. ``thread`` scope keeps its
+        ``THREAD EXPORT`` banner but never prints it unqualified when the
+        export may be short: a ``PARTIAL:`` block follows it naming the
+        exported-vs-requested counts, the mailboxes searched, and any
+        incompleteness ``get_email_thread`` itself reported.
     """
 
     from apple_mail_mcp.tools import analytics
@@ -125,6 +133,10 @@ def export_emails(
         run_message_id_export,
         run_multi_mailbox_id_export,
         unbounded_export_error,
+    )
+    from apple_mail_mcp.tools.analytics.export_thread_scope import (
+        derive_thread_candidate_mailboxes,
+        format_thread_export,
     )
 
     if account is None:
@@ -402,18 +414,14 @@ def export_emails(
         except json.JSONDecodeError:
             return "Error: get_email_thread returned invalid JSON during thread export"
         records = thread_payload.get("items", [])
+        if not isinstance(records, list):
+            return "No emails found for thread export"
         if offset > 0:
             records = records[offset:]
-        if not isinstance(records, list) or not records:
+        if not records:
             return "No emails found for thread export"
         thread_records = cast(list[dict[str, object]], records)
 
-        # Gmail-backed accounts report each thread message's container as
-        # the virtual "All Mail" mailbox, which Mail.app cannot open
-        # directly and which must never be scanned (it is the entire
-        # remote store). Look ids up across a small, fixed set of
-        # openable, bounded mailboxes instead of trusting the reported
-        # mailbox name.
         raw_thread_ids = [str(record.get("message_id", "")).strip() for record in thread_records]
         seen_thread_ids: set[str] = set()
         ordered_thread_ids: list[str] = []
@@ -424,9 +432,17 @@ def export_emails(
         if not ordered_thread_ids:
             return "No emails found for thread export"
 
-        candidate_mailboxes = ["INBOX"]
-        if include_sent:
-            candidate_mailboxes.extend(["Sent Mail", "Sent", "Sent Messages", "Sent Items"])
+        # Where the thread's members actually live comes from the records
+        # themselves; the historical INBOX+Sent list is kept only as a
+        # fallback. Gmail reports a member's container as the virtual
+        # "All Mail" mailbox, which Mail.app cannot open directly and which
+        # must never be scanned (it is the entire remote store), so
+        # derive_thread_candidate_mailboxes always drops it.
+        candidate_mailboxes, mailboxes_truncated = derive_thread_candidate_mailboxes(
+            thread_records,
+            include_sent=include_sent,
+            requested_mailbox=mailbox,
+        )
 
         result = run_multi_mailbox_id_export(
             account=account,
@@ -441,7 +457,15 @@ def export_emails(
             timeout=timeout,
             runner=analytics.run_applescript,
         )
-        return "THREAD EXPORT\n\n" + result
+        if result.startswith("Error:"):
+            return result
+        return format_thread_export(
+            result_text=result,
+            requested_ids=ordered_thread_ids,
+            candidate_mailboxes=candidate_mailboxes,
+            mailboxes_truncated=mailboxes_truncated,
+            thread_payload=thread_payload,
+        )
 
     elif scope == "entire_mailbox":
         from apple_mail_mcp.tools.search.records import _build_applescript_date

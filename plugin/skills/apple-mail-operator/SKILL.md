@@ -55,9 +55,30 @@ If `mcp__apple-mail__*` tools are absent from the client tool list, stop and fix
 | Snapshot unread + recent hints | `get_inbox_overview()`; start compact `output_format`, avoid heavy dashboards during debugging |
 | Page recent inbox bodies | `search_emails(limit=5..8, output_format="json")` for ids; `list_inbox_emails(max_emails=5..8)` for subject skim only |
 | Locate a needle | Narrow `search_emails(limit=5, recent_days=2..7)` → if empty on Exchange, retry `sender="..."` with higher `limit` → `get_email_by_id(account=..., message_id=...)` |
-| Conversation context | `get_email_thread(account=..., message_id=...)` when supported; **also** search Sent independently if thread looks incomplete (see `exchange-account-patterns.md`) |
+| Conversation context | `get_email_thread(account=..., message_id=..., output_format="json")`, then check all four completeness fields before treating the result as the whole conversation (see **Thread completeness** below) |
 | Mailbox map | `list_mailboxes(include_counts=true)` |
 | Idle mail fetch | `synchronize_account(account="...", confirm_sync=True)` only after the user accepts that Mail may download a large backlog |
+
+### Thread completeness
+
+A thread result that looks whole can be a truncated slice of the conversation. Check completeness **before** summarizing a thread, counting its messages, deciding a reply is unnecessary, or collecting its ids for an archive or export, and call with `output_format="json"` to do it: the fields below are JSON-only. `matched == returned` with no `errors` does not settle the question: the scan is bounded independently of `max_messages`, and a scan that stopped early loses no reads, so every failure counter stays at zero.
+
+**Four separate signals, none overlapping the others. `thread_incomplete` alone is not a completeness test — read all four.**
+
+| Field | Meaning | Action |
+|-------|---------|--------|
+| `thread_incomplete: true` | A bound you did **not** choose cut the thread short. The three rows below are its components | Branch on the component that is set |
+| ├ `scan_ceiling_hit: [mailbox, ...]` | That mailbox's candidate slice filled its bound, so messages behind it were never examined | Raise `scan_messages` (applied value echoed as `scan_messages_applied`); it is clamped at **400**. When 400 is not enough, narrow `mailboxes` to the one folder holding the conversation, or tell the user which mailbox could not be fully scanned |
+| ├ `render_incomplete` / `candidate_scan_incomplete` | Rows were counted but not returned, or a candidate read threw | Read `errors` / `error_details`; retry with a larger `timeout` or a narrower mailbox list |
+| └ `anchor_recovered: true` on an item | The scan missed the message you anchored on and it was added back from the direct fetch | Treat the whole thread as suspect: members near the anchor were likely missed too |
+| `window_truncated: true` + `date_floor_hit: [mailbox, ...]` | Your own `recent_days` cutoff stopped the walk; older members exist outside the window. `thread_incomplete` stays **false** | Widen `recent_days`. Raising `scan_messages` will not help here |
+| `return_limit_reached: true` | The thread hit your own `max_messages` return bound, so more members exist than were returned. `thread_incomplete` stays **false** | Re-run with a larger `max_messages`. Treat `returned == max_messages` as the same boundary whenever the field is absent |
+
+Do not loop "re-run until the flag clears": with `scan_messages` capped at 400, a conversation older or deeper than that never clears, and the terminating move is a narrower `mailboxes` list or an honest report to the user.
+
+Text mode is **not** an equivalent view. It prints a `PARTIAL:` line for the `recent_days` date floor, which `thread_incomplete` deliberately omits, but `attachment_count`, `anchor_recovered`, `matched` / `returned`, and every `*_hit` array reach JSON only; anchor recovery itself runs only in the JSON payload builder, so text mode never restores a missing anchor and never says one was missing.
+
+The `All` mailbox selector is supported and resolves the anchor through a bounded probe, but an explicit `mailboxes=["INBOX", "Sent", "Archive"]` is faster and controls exactly what is scanned, so prefer it. Per-item `attachment_count` is `null` when Mail could not read the list, which is not the same as `0`. Exchange-specific thread caveats and the independent Sent cross-check stay in [`exchange-account-patterns.md`](references/exchange-account-patterns.md).
 
 ## Performance Rules
 

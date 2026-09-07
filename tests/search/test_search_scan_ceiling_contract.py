@@ -150,12 +150,17 @@ class GeneratedScriptStillCompilesTests(unittest.TestCase):
 
 class ScanCeilingParsingTests(unittest.TestCase):
     def test_marker_parses_as_a_bound_not_an_error(self) -> None:
+        # The `scan_ceiling` key is new (AGENTIC-2794): the row's numeric bound
+        # is kept as data, not only inside the prose, so the response can report
+        # the bound the scan actually stopped at instead of restating a
+        # constant. Everything else about the entry is unchanged.
         records, mailbox_errors = _parse_search_records("\n".join([_ROW, f"SCAN_CEILING|||INBOX|||{CEILING}"]))
         assert len(records) == 1
         assert mailbox_errors == [
             {
                 "mailbox": "INBOX",
                 "type": "scan_ceiling",
+                "scan_ceiling": str(CEILING),
                 "message": (
                     f"scan stopped at the {CEILING}-message ceiling for this mailbox; "
                     "results are bounded by the scan, not by the filter"

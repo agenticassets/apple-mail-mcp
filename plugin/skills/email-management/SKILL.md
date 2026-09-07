@@ -165,7 +165,7 @@ Mindset:
 | Search email bodies | `search_emails(body_text="...", allow_body_scan=True)` | Slower; requires explicit opt-in |
 | Cross-account search | `search_emails(account=None, all_accounts=True)` | Costly on Exchange; use sparingly |
 | Recent inbox listing | `list_inbox_emails(max_emails=50, read_status="unread", include_content=False)` | Default cap is 50; `read_status="unread"` is the cheapest pass on a large inbox. Legacy `include_read=False` still works but deprecated. |
-| View a conversation | `get_email_thread(account="...", message_id="...")` | **Discovery-only:** if no id yet, run bounded `search_emails` or `list_inbox_emails` first, then pass returned `message_id` |
+| View a conversation | `get_email_thread(account="...", message_id="...")` | **Discovery-only:** if no id yet, run bounded `search_emails` or `list_inbox_emails` first, then pass returned `message_id`. In JSON, check all four completeness fields (`thread_incomplete`, `window_truncated`, `return_limit_reached`, `scan_ceiling_hit`) before treating the result as the whole conversation ([`thread-management.md`](references/thread-management.md)) |
 | Move messages | `move_email(message_ids=[...], max_moves=N)` | ID-first; filter scans need `allow_filter_scan=True` |
 | Flag / mark read | `update_email_status(action="...", message_ids=[...])` | ID-first; default cap 10 |
 | Move to trash / delete | `manage_trash(action="...", message_ids=[...])` | Previews by default; repeat the same call with `dry_run=False` to act. See `references/bulk-cleanup.md` |

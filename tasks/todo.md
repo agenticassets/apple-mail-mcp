@@ -2,9 +2,11 @@
 
 **Tasks layout:** Agents MUST follow [`tasks/CLAUDE.md`](CLAUDE.md) § Agent requirements (`active/` · `reference/` · `archive/` only; local gates enforce).
 
-**Current branch:** `fix/calendar-read-and-reply-state` from current `origin/main` at `79141b1`; 3.12.1 implementation and live acceptance are complete, pending final release gate, PR, and Cayman merge approval.
+**Current branch:** `fix/thread-member-completeness` from `origin/main` at `73a7532`; AGENTIC-2794 (thread member completeness) implementation and live acceptance are complete, pending release gate, PR, and Cayman merge approval.
 
-**Main state:** `main` and `origin/main` are at `79141b1`. Tag `v3.12.0` points at `df5e034`; the later main commit is documentation-only. The current branch prepares 3.12.1 and carries no merge, tag, release, or installed-plugin promotion yet.
+**Main state:** `main` and `origin/main` are at `73a7532`. The current branch carries no merge, tag, release, or installed-plugin promotion.
+
+**Active lane:** [`active/thread-member-completeness-2794/handoff-2026-09-07.md`](active/thread-member-completeness-2794/handoff-2026-09-07.md) — five root causes behind one reported symptom (a 9-member conversation returning 5 and reporting itself complete), the live before/after table, and the two defects that only the live run exposed.
 
 ## What the merged v3.12.0 lane did
 

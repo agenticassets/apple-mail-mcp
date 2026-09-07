@@ -37,18 +37,25 @@ Widen timeframe only after checking performance.
 Prefer ids from step 1:
 
 ```
-list_email_attachments(message_ids=[12345, 12346], max_results=10, output_format="json")
+list_email_attachments(message_ids=["12345", "12346"], mailboxes=["INBOX", "Sent"],
+                       max_results=10, output_format="json")
 ```
 
 If ids are unknown, run bounded discovery first, then call by reviewed ids:
 
 ```
-list_email_attachments(message_ids=[12345], max_results=10)
+list_email_attachments(message_ids=["12345"], max_results=10)
 ```
+
+**`unresolved_message_ids` has two causes, and the wrong mailbox is only one of them.** The other is `max_results` (default 50): it caps how many messages the scan inspects, and the counter is global across every mailbox in the call, so once the cap is reached the scan stops and *every remaining id* lands in `unresolved_message_ids` — indistinguishable from an id that was genuinely absent. The examples above pass `max_results=10`, which is exhausted by an eleventh id. When ids you know exist come back unresolved, raise `max_results` or split the batch before concluding they are elsewhere.
+
+**Attachments live wherever the message lives, and this tool only searches the mailboxes you name.** The default is the account inbox alone, so an id in `Sent Items`, `Archive`, or a project folder resolves nowhere and comes back in `unresolved_message_ids`. Pass the mailbox each id came from: `mailbox="Archive"` for one, or `mailboxes=["INBOX", "Sent", "Archive"]` for several. `"All"` is rejected on both parameters; name the mailboxes explicitly. Discovery rows from `search_emails` / `list_inbox_emails` and members of a `get_email_thread` result each carry their own `mailbox`, so collect ids and mailboxes in the same pass.
+
+**Never report "no attachments" from an empty listing alone.** In JSON, check `complete` first: it is true only when every requested id resolved and no mailbox failed. When it is false, read `unresolved_message_ids` (ids that were never seen — wrong mailbox, or the `max_results` cap) and `errors`, which is a merged list: a mailbox that failed to resolve or threw (which does not abort the other mailboxes), plus, whenever anything is unresolved, one `N of M requested message id(s) were not found in the searched mailbox(es): ...` line. A resolved message with genuinely zero attachments appears in `resolved_message_ids` and renders as `No attachments`; that is the only evidence that supports saying so. Text mode carries the same facts as a `Mailboxes searched:` header and trailing `PARTIAL: ⚠` lines.
 
 See [`large-inbox-rules.md`](references/large-inbox-rules.md) for the canonical pre-flight.
 
-`list_email_attachments` and `save_email_attachment` require exact `message_ids`; use bounded `search_emails(..., has_attachments=True)` first when ids are unknown. JSON attachment listing returns each row's `message_id`, `attachment_index`, filename, and size. Treat `message_id + attachment_index` as the exact selector for saving. **`attachment_index` is 1-based**: the first attachment is `1`, and `save_email_attachment(attachment_index=0)` is refused with `Error: attachment_index must be a positive 1-based integer`.
+`list_email_attachments` and `save_email_attachment` require exact `message_ids`; use bounded `search_emails(..., has_attachments=True)` first when ids are unknown. JSON attachment listing returns each row's `message_id`, `attachment_index`, filename, and size. Treat `message_id + attachment_index` as the exact selector for saving. **`attachment_index` is 1-based**: the first attachment is `1`, and `save_email_attachment(attachment_index=0)` is refused with `Error: attachment_index must be a positive 1-based integer.`
 
 If duplicate or similar filenames exist, choose the row from `list_email_attachments(..., output_format="json")` and save with `attachment_index`.
 
@@ -83,6 +90,8 @@ When attachments are **paper briefs** (R&R specs, reviewer packets), save under 
 | Ambiguous filenames | Prefer exact match substrings surfaced by `list_email_attachments` |
 | Password-protected zips | Note inability to introspect payload |
 | Extremely large corp attachments | Mention Mail may choke; consider chunked manual download |
+| Listing came back empty | Not proof of "no attachments". Check `complete` / `unresolved_message_ids` (JSON) or the `PARTIAL: ⚠` lines (text), then retry naming the mailbox that holds the id **and** with a `max_results` at least as large as the id batch |
+| Attachment counts from `get_email_thread` | Per-item `attachment_count` is `null` when Mail could not read the list, which is not `0`. Confirm with `list_email_attachments` before reporting a count |
 
 ## Related Skills
 

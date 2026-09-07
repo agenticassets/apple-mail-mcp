@@ -10,9 +10,9 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 | `inbox/accounts.py` | 2 | Account enumeration: `list_accounts`, `list_account_addresses` |
 | `inbox/mailboxes.py` | 1 | Folder listing: `list_mailboxes` |
 | `inbox/overview.py` | 1 | Overview: `get_inbox_overview` (script builder + parser; `overview_formatting.py` holds the pure text/JSON formatters) |
-| `search/emails.py` | 1 | Find: `search_emails` (windowing, replied-detection) |
+| `search/emails.py` | 1 | Find: `search_emails` (windowing, replied-detection; `scan_cap.py` is a pure leaf holding the scan-bound arithmetic) |
 | `search/by_id.py` | 2 | Exact-id fetch: `get_email_by_id`, `get_email_by_ids` |
-| `search/thread.py` | 1 | Thread reconstruction: `get_email_thread` |
+| `search/thread.py` | 1 | Thread reconstruction: `get_email_thread` (script builder; `thread_helpers.py` holds the subject/header matching and the marker channel, `thread_payload.py` the pure JSON payload assembly, `anchor.py` the bounded anchor-mailbox probe for the `All` selector) |
 | `compose/send.py` | 1 | Standalone send/draft: `compose_email` |
 | `compose/reply.py` | 1 | Reply (native window default): `reply_to_email` |
 | `compose/forward.py` | 1 | Forward draft: `forward_email` |
@@ -25,9 +25,9 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 | `manage/trash.py` | 1 | Trash ops: `manage_trash` (move_to_trash/delete_permanent/empty_trash) |
 | `manage/mailbox.py` | 1 | Folder creation: `create_mailbox` (nested paths) |
 | `manage/sync.py` | 1 | IMAP sync: `synchronize_account` (`helpers.py` is a shared leaf) |
-| `analytics/attachments.py` | 1 | Attachment listing: `list_email_attachments` (`statistics_parsing.py` is a pure leaf) |
+| `analytics/attachments.py` | 1 | Attachment listing: `list_email_attachments` across named mailboxes (`attachments_helpers.py` is a pure parse/merge/render leaf) |
 | `analytics/statistics.py` | 1 | Stats: `get_statistics` (account_overview/sender_stats/mailbox_breakdown) |
-| `analytics/export.py` | 1 | Export: `export_emails` by exact ids, bounded filters, correspondent/thread scopes, or mailbox pages; supports raw EML and optional size-capped attachment bundles (`export_helpers.py` / `export_formatting.py` leaves) |
+| `analytics/export.py` | 1 | Export: `export_emails` by exact ids, bounded filters, correspondent/thread scopes, or mailbox pages; supports raw EML and optional size-capped attachment bundles (`export_helpers.py` / `export_formatting.py` / `export_thread_scope.py` leaves) |
 | `analytics/full_export.py` | 1 | Disabled refusal shim: `full_inbox_export` (returns `UNBOUNDED_EXPORT_DISABLED`, no AppleScript runs) |
 | `analytics/dashboard.py` | 1 | Dashboard: `inbox_dashboard` + recent-email helpers |
 | `smart_inbox/awaiting_reply.py` | 1 | Follow-up tracking: `get_awaiting_reply` (sent-vs-inbox Message-ID cross-reference; `helpers.py` shares `_normalize_message_id`) |
@@ -147,6 +147,33 @@ Two cross-checks are free wherever the tool already read the data, and only thos
 `get_mailbox_unread_counts` reads neither, so it labels but never flags, and carries the block under the `__unread_count_provenance__` sentinel key (same dunder convention as `__truncated__`). **A clean check is not proof of a correct count** — the measured 3,236-vs-10,016 case trips neither. `get_statistics`'s `read` is `total - unread` and inherits the cache error with the sign flipped, so it carries the same label. `sender_stats` counts per-message `read status` and is genuinely measured.
 
 Contract tests: `tests/cross_cutting/test_unread_count_provenance.py`.
+
+## Scan bounds are not return bounds (AGENTIC-2794)
+
+A **scan bound** is how many messages a tool examines; a **return bound** is how many rows it hands back. Sizing the first from the second is the defect class this section exists to prevent, and it is worse than a timeout: the tool completes, the counts reconcile, and every incompleteness flag reads false. `get_email_thread` bounded its per-mailbox candidate slice by `max_messages`, so a request for at most 50 members also examined only the newest 50 messages of each mailbox. Measured live: a 9-message conversation returned 5 members with `matched=5 returned=5 render_incomplete=false candidate_scan_incomplete=false errors=null`. Nothing was lost in a `try`, so no failure counter moved.
+
+Two rules follow.
+
+**Size the scan from the window, not the page.** `bounded_scan.compute_scan_upper_bound(recent_days, base_cap=..., window_cap=..., days_scale=...)` is the only sanctioned arithmetic; the caps live in `SCAN_BOUNDS`. `search_emails` derives its window from `recent_days` **or**, when only `date_from` was passed, from that date's age (`search/scan_cap.py`) — the two spell the same window, so they widen the slice the same way. `get_email_thread` sizes from `THREAD_SCAN_BASE_CAP` (120) + `THREAD_SCAN_DAYS_SCALE` (15/day), clamped by `THREAD_SCAN_WINDOW_CAP` / `THREAD_SCAN_HARD_CEILING` (400), and takes an explicit `scan_messages` override. That 400 is **not** governed by `SEARCH_HARD_CEILING`/`INBOX_HARD_CEILING` (50): it is the one deliberate exception, justified in the `SCAN_BOUNDS` comment in [`constants.py`](../constants.py), because thread reconstruction is scoped to a single conversation whose earlier members routinely sit past a busy mailbox's newest 50. Do not copy the exception into a general listing or search path.
+
+**A tool that stopped early must say so in-band, in both output modes.** A caveat that reaches only the JSON payload is invisible to a text caller and vice versa, so a marker row carries the fact to JSON *and* the text render carries it too: `get_email_thread`, `list_email_attachments`, and `export_emails(scope="thread")` emit `PARTIAL:` lines, while `search_emails` prefixes a `WARNING:` line in `_build_search_response`. Report the bound the scan actually used, never the constant it was derived from (a body-capped scan stops at `BODY_SEARCH_AUTO_CAP` = 25, not at 50).
+
+| Marker prefix | Emitted by | Python channel |
+|---------------|-----------|----------------|
+| `ERROR_MAILBOX\|\|\|<mailbox>\|\|\|<msg>` | search, thread, `list_email_attachments` | `errors` / `error_details`; one bad mailbox never aborts the rest |
+| `SCAN_CEILING\|\|\|<mailbox>\|\|\|<bound>` | `search_emails` | `scan_ceiling_reached` / `scan_ceiling` / `scan_ceiling_mailboxes` + a `warnings` entry. Split out of `error_details` by `_non_ceiling_errors`: a saturated scan is a bound, not a failure |
+| `THREAD_SCAN_CEILING\|\|\|<mailbox>\|\|\|<bound>` | `get_email_thread` | `scan_ceiling_hit[]`; remediation is a larger `scan_messages` |
+| `THREAD_DATE_FLOOR\|\|\|<mailbox>\|\|\|<cutoff>` | `get_email_thread` | `date_floor_hit[]`; remediation is a wider `recent_days`. Suppresses the ceiling row for that mailbox — the window ran out before the slice did, so the slice was not the limiting bound |
+| `THREAD_ATTACHMENTS\|\|\|<id>\|\|\|<count>[\|\|\|<reason>]` | `get_email_thread` | per-item `attachment_count`; a negative count becomes `null`, which is **not** `0` |
+| `SEEN_MESSAGE\|\|\|<mailbox>\|\|\|<id>\|\|\|…` | `list_email_attachments` | proof a message was read; without it a message with zero attachments emits nothing and is indistinguishable from an id that was never found |
+
+**Marker rows must be split out in Python before `_parse_search_records` runs.** That parser splits record rows with `split("|||", 14)`, so a caveat carried as a 16th field folds into `was_replied_to` instead of being parsed. `search/thread_helpers.split_thread_markers()` lifts the three `THREAD_*` rows out first and returns the remaining text; `search/records._parse_search_records` handles `ERROR_MAILBOX` / `SCAN_CEILING` itself because it owns those prefixes. Never widen a record row to carry a caveat.
+
+`get_email_thread` folds every component signal into one boolean, `thread_incomplete`: a render shortfall, a candidate-scan error, the **scan ceiling**, `anchor_recovered`, or a script error. Callers branch on that; the component fields say what to do about it. New tools that can stop early should offer the same single flag rather than making the caller compose four.
+
+**The `recent_days` date floor is deliberately excluded from that flag** and reported separately as `window_truncated` + `date_floor_hit[]`. It fires whenever a mailbox holds anything older than the requested window, which is nearly always, so folding it in made `thread_incomplete` true on every realistic call — trading one useless signal for another. The distinction to preserve when adding a bound: `thread_incomplete` means *a bound the caller did not choose* cut the result short; a bound the caller asked for gets its own field.
+
+Contract tests: `tests/search/test_thread_member_completeness.py` (with the synthetic multi-mailbox thread fixture in `tests/search/thread_fixtures.py`), `tests/search/test_search_scan_window_bound.py`, `tests/search/test_search_scan_ceiling_contract.py`, `tests/analytics/test_export_thread_completeness.py`, `tests/analytics/test_list_email_attachments_mailboxes.py`.
 
 ## Agent-facing selection
 

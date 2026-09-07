@@ -65,6 +65,9 @@ All bounded AppleScript slices read caps from [`constants.py`](../plugin/apple_m
 | `BODY_SEARCH_AUTO_CAP` | 25 | `search_emails` body scans without explicit `date_from` |
 | `SEARCH_HARD_CEILING` | 50 | Hard ceiling (2026-07, AGENTIC-988): `search_emails` never binds more than this many messages per call, regardless of how the caps above scale |
 | `INBOX_DEFAULT_CAP` / `INBOX_MAX_CAP` | 100 / 50 | `list_inbox_emails` unread/read filter slice |
+| `THREAD_SCAN_BASE_CAP` / `THREAD_SCAN_DAYS_SCALE` | 120 / 15 | `get_email_thread` candidate-scan floor and per-`recent_days`-day scaling, via `compute_scan_upper_bound` |
+| `THREAD_SCAN_WINDOW_CAP` / `THREAD_SCAN_HARD_CEILING` | 400 / 400 | `get_email_thread` ceiling. **Deliberate exception to the 50-message ceilings below** (AGENTIC-2794): thread reconstruction is scoped to one conversation and its earlier members routinely sit past a busy mailbox's newest 50. Overridable per call with `scan_messages`. Do not copy into a listing or search path |
+| `THREAD_ANCHOR_MAILBOX_PROBE_CAP` | 20 | Mailboxes probed to resolve an anchor id under `get_email_thread(mailbox="All")` |
 | `INBOX_HARD_CEILING` | 50 | Hard ceiling (2026-07, AGENTIC-988): `list_inbox_emails` never binds more than this many messages per call, regardless of `max_emails`; also the per-mailbox cap for `get_statistics` |
 | `INBOX_SHORT` / `INBOX_LONG` | 25 / 75 | `smart_inbox` per-mailbox ceilings |
 | `TRASH_SCAN` | 100 | Trash listing branches |
@@ -73,6 +76,12 @@ All bounded AppleScript slices read caps from [`constants.py`](../plugin/apple_m
 | `MAX_MAILBOXES_PER_SEARCH_ALL` | 10 | `search_emails(mailbox="All")` cap |
 
 `get_statistics`: `days_back <= 7` → 10 mailboxes; else 20 mailboxes. Both branches cap each mailbox read at `INBOX_HARD_CEILING` (50): longer windows fan across more mailboxes rather than reading deeper into each one.
+
+### Bounded-scan honesty (AGENTIC-2794)
+
+A scan bound is not a return bound, and the two must be derived separately. Sizing the per-mailbox slice from the caller's *page* (`max_messages`, `limit + offset + 1`) produces a wrong answer that reconciles perfectly: `get_email_thread` returned 5 members of a live 9-message conversation with every incompleteness flag false, because nothing was lost in a `try` and the loss counters therefore never moved. Size the slice from the caller's date window through `bounded_scan.compute_scan_upper_bound` (`recent_days`, or the age of an explicit `date_from` — the two describe the same window), floor it at the page arithmetic so pagination still works, and clamp it with the tool's `SCAN_BOUNDS` ceiling.
+
+Whenever a bound can cut a scan short, the tool must say so **in band and in both output modes**: an AppleScript marker row that Python routes to a structured field, plus a text-mode caveat (`PARTIAL:` lines on `get_email_thread`, `list_email_attachments`, and thread exports; a `WARNING:` prefix on `search_emails`). Report the bound the scan actually stopped at, not the constant it was derived from. Marker rows must be lifted out in Python *before* `records._parse_search_records` runs, because that parser splits record rows with `split("|||", 14)` and would fold an extra field into `was_replied_to`; never widen a record row to carry a caveat. Tools that can stop early for several reasons should expose one flag to branch on (`get_email_thread`'s `thread_incomplete`) alongside the component fields that say what to do about it (`scan_ceiling_hit` → raise `scan_messages`; `date_floor_hit` → widen `recent_days`). Marker inventory: [`plugin/apple_mail_mcp/tools/CLAUDE.md`](../plugin/apple_mail_mcp/tools/CLAUDE.md) § Scan bounds are not return bounds.
 
 ### Performance defaults
 

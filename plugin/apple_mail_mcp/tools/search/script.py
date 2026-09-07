@@ -5,11 +5,11 @@ Pure string building only (escape / mailbox refs / scan-bound math); no
 """
 
 from apple_mail_mcp.applescript_snippets import iso_datetime_handlers, sanitize_field_handler
-from apple_mail_mcp.bounded_scan import compute_scan_upper_bound
 from apple_mail_mcp.constants import SCAN_BOUNDS
 from apple_mail_mcp.core import build_mailbox_ref, escape_applescript
 from apple_mail_mcp.core.reply_state import was_replied_fragment
 from apple_mail_mcp.tools.search.records import _build_applescript_date
+from apple_mail_mcp.tools.search.scan_cap import compute_search_scan_cap
 
 # Per-message read failures inside the scan loops below used to be swallowed by
 # a bare ``try ... end try``, which made "every candidate raised" look exactly
@@ -90,12 +90,14 @@ def _build_search_script(
     ``messages 1 thru collectLimit`` bound directly, so we never materialize
     the full message list of a large (10K+) mailbox.
 
-    Scan-cap scales with ``recent_days`` so that narrow filters (sender,
-    subject_terms) over a wider date window actually inspect a meaningful
-    portion of that window — otherwise a 7-day query with default limit=20
-    would only inspect the 21 newest messages and silently miss matches
-    further back. Floor stays at ``collect_limit + offset`` and ceiling
-    caps at ``SEARCH_WINDOW_CAP`` to keep Mail bounded on remote IMAP/Exchange mailboxes.
+    Scan-cap scales with the caller's date window — ``recent_days`` when it was
+    passed, otherwise the age of ``date_from`` — so that narrow filters (sender,
+    subject_terms) over a wider window actually inspect a meaningful portion of
+    it; otherwise a 7-day query with default limit=20 would only inspect the 21
+    newest messages and silently miss matches further back. Floor stays at
+    ``collect_limit + offset`` and the ceiling caps at ``SEARCH_WINDOW_CAP`` to
+    keep Mail bounded on remote IMAP/Exchange mailboxes. The arithmetic and the
+    ``scan_ceiling_applied`` gate live in ``scan_cap.compute_search_scan_cap``.
 
     Performance guidance — body_text:
         When ``body_text`` is set without an explicit ``date_from``, the
@@ -138,50 +140,18 @@ def _build_search_script(
 
     collect_limit = limit + 1  # +1 for has_more probe; offset is decremented separately
     base_cap = collect_limit + offset
-    # Window cap from the shared bounded-scan helper (Phase A of the
-    # whose-elimination refactor — see plugin/apple_mail_mcp/bounded_scan.py).
-    # We floor at base_cap so callers paginating past the helper's cap still
-    # get a slice large enough to honor their offset+limit.
-    if recent_days and recent_days > 0:
-        window_cap = compute_scan_upper_bound(recent_days)
-        # Narrow header searches are usually "needle" lookups. On large
-        # Exchange accounts, binding hundreds of recent messages just to prove
-        # a no-hit subject does not exist can exceed wrapper timeouts. Keep the
-        # scan bounded by the caller's requested page, and only widen as the
-        # requested recent window widens.
-        scan_cap = base_cap if subject_only_header_search else max(base_cap, window_cap)
-    else:
-        scan_cap = base_cap
-
-    # Body-search cap: reading ``content of aMessage`` for every candidate is
-    # O(N × message-size) and triggers cold-cache IMAP fetches on large remote
-    # mailboxes. When the caller has not explicitly bounded the window with
-    # ``date_from``, cap at 100 to keep wall time reasonable. When an explicit
-    # ``date_from`` is passed the caller has intentionally bounded the scan, so
-    # we leave the cap as-is.
-    BODY_SEARCH_AUTO_CAP = SCAN_BOUNDS["BODY_SEARCH_AUTO_CAP"]
-    body_search_capped = False
-    if use_body_search and not date_from_explicit and scan_cap > BODY_SEARCH_AUTO_CAP:
-        scan_cap = min(scan_cap, BODY_SEARCH_AUTO_CAP)
-        body_search_capped = True
-
-    # Hard ceiling: regardless of how base_cap/window_cap/body-cap computed
-    # above, never bind more than SEARCH_HARD_CEILING messages in a single
-    # `messages 1 thru scan_cap` slice. This is what actually bounds wall
-    # time on large cold-cache Exchange accounts — the scaled caps above can
-    # still produce values above this floor when offset/limit are large.
-    scan_cap = min(scan_cap, SCAN_BOUNDS["SEARCH_HARD_CEILING"])
-
-    # Whether any cap above cut the scan below what this page actually needs.
-    # `base_cap` is limit + 1 + offset, i.e. exactly the number of messages that
-    # would have to be inspected for `has_more` to be an honest statement about
-    # the mailbox. When the scan lands under it, `has_more: false` can only ever
-    # mean "no more inside the window we scanned" — and with the default
-    # limit=100 against a 50-message ceiling, that is every call. The flag alone
-    # would therefore fire constantly, including on a 12-message folder the scan
-    # read in full, so it only arms the marker; the marker itself fires from
-    # AppleScript when the slice actually saturates.
-    scan_ceiling_applied = scan_cap < base_cap
+    # All scan-bound arithmetic (window widening, body cap, hard ceiling, and
+    # the truncation flag) lives in ``scan_cap`` — see that module for why
+    # ``date_from`` widens the slice and why the flag compares against the
+    # pre-clamp desired size rather than ``base_cap``.
+    scan_cap, body_search_capped, scan_ceiling_applied = compute_search_scan_cap(
+        base_cap=base_cap,
+        recent_days=recent_days,
+        date_from=date_from,
+        subject_only_header_search=subject_only_header_search,
+        use_body_search=use_body_search,
+        date_from_explicit=date_from_explicit,
+    )
 
     # Track whether the mailbox-count cap is active (mailbox="All" path).
     # The AppleScript guard caps at MAX_MAILBOXES_PER_SEARCH; we surface this

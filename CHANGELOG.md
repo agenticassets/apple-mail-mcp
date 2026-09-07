@@ -7,6 +7,55 @@ here. The plugin/MCPB/marketplace versions track this file.
 
 ## 3.12.1 - 2026-08-26
 
+- **`get_email_thread` no longer reports a truncated conversation as complete.**
+  The per-mailbox candidate scan was bounded by `max_messages`, which is the
+  *return* limit, so asking for at most 50 members also examined only the
+  newest 50 messages of each mailbox. A 9-message conversation came back with
+  5 members, `render_incomplete: false`, `candidate_scan_incomplete: false`,
+  and no errors: a confident wrong answer. The scan bound is now derived from
+  the date window (`SCAN_BOUNDS["THREAD_SCAN_BASE_CAP"]` 120, plus 15 per
+  `recent_days` day, capped at 400), which is a deliberate exception to the
+  50-message `SEARCH_HARD_CEILING` because thread reconstruction is scoped to
+  one conversation and its earlier members routinely sit past a busy mailbox's
+  newest 50. A new `scan_messages` parameter overrides that bound. JSON adds
+  `thread_incomplete` as the single flag to branch on — a bound the caller did
+  not choose cut the thread short — plus `scan_ceiling_hit` for the mailboxes
+  whose slice filled. A caller's own `recent_days` cutoff is reported apart
+  from it as `window_truncated` and `date_floor_hit`, because it fires whenever
+  a mailbox holds anything older than the window and would otherwise make
+  `thread_incomplete` true on every call. Also `scan_messages_applied`, per-item
+  `attachment_count` (null when unreadable, which is not the same as 0), and a
+  `warnings` entry for each bound that fired; text mode prints matching
+  `PARTIAL:` lines. `mailbox="All"` returned `Error: Mailbox not found: All`
+  for a documented argument and now resolves the anchor's real mailbox through
+  a bounded probe of up to 20 mailboxes, and an anchor the scan missed is
+  appended with `anchor_recovered: true` rather than being dropped from its own
+  thread. Raising the slice does cost wall time: measured live across three
+  mailboxes, 50 to 150 moved one call from 6.8s to 10.9s and recovered every
+  member, while 400 cost no more than 150.
+
+- **`list_email_attachments`, `export_emails(scope="thread")`, and
+  `search_emails` now say when a scan stopped short of the question asked.**
+  `list_email_attachments` was inbox-only with no way to name another mailbox,
+  and a message with no attachments was byte-identical to an id that was never
+  found; it now takes `mailbox` / `mailboxes` (mirroring `get_email_thread`,
+  with `"All"` rejected) and reports `mailboxes_searched`,
+  `resolved_message_ids`, `unresolved_message_ids`, `complete`, and `errors`.
+  A thread export derived its candidate mailboxes from a hardcoded INBOX plus
+  fixed Sent list, so it could write 5 of 9 messages under an unqualified
+  success banner; candidates now come from the returned thread records (Gmail's
+  virtual `All Mail` still excluded, capped at `MAX_MAILBOXES_PER_SEARCH`),
+  exported ids are reconciled against requested ids, and any shortfall or
+  inherited thread caveat prints as a `PARTIAL:` line under the `THREAD EXPORT`
+  banner. `search_emails` sized its scan from the page (`limit + offset + 1`)
+  and ignored `date_from` entirely, so a precise query with a small limit got
+  the smallest possible scan, and its `scan_ceiling_applied` marker was
+  compared against the wrong value and never armed; the window is now derived
+  from `date_from`'s age the same way it is from `recent_days`, and the
+  reported ceiling carries the bound that mailbox actually stopped at rather
+  than restating a constant. None of this widens the 50-message search or
+  inbox ceilings.
+
 - **Calendar.app reads use stable object references on hosts where
   `calendarIdentifier` fails.** Calendar listing now recovers opaque IDs from
   Calendar object references, passes those selectors through bounded reads and

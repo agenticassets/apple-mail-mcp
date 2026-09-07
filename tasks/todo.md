@@ -6,7 +6,9 @@
 
 **Main state:** `main` and `origin/main` are at `73a7532`. The current branch carries no merge, tag, release, or installed-plugin promotion.
 
-**Active lane:** [`active/thread-member-completeness-2794/handoff-2026-09-07.md`](active/thread-member-completeness-2794/handoff-2026-09-07.md) — five root causes behind one reported symptom (a 9-member conversation returning 5 and reporting itself complete), the live before/after table, and the two defects that only the live run exposed.
+**Active lane:** [`active/thread-member-completeness-2794/`](active/thread-member-completeness-2794/) — five root causes behind one reported symptom (a conversation returning 5 of 10 members and reporting itself complete). [`handoff-2026-09-07.md`](active/thread-member-completeness-2794/handoff-2026-09-07.md) has the live before/after table; [`2026-09-07-closeout.md`](active/thread-member-completeness-2794/2026-09-07-closeout.md) the decisions and gate evidence; [`2026-09-07-forward-queue.md`](active/thread-member-completeness-2794/2026-09-07-forward-queue.md) the deferred work.
+
+**PR:** [#105](https://github.com/Agentic-Assets/apple-mail-mcp/pull/105) at `620b26c` — OPEN, MERGEABLE, awaiting founder merge approval. Release gate passed and stamped; 2757 tests passing; live acceptance complete. No version bump: this rides the open 3.12.1 lane.
 
 ## What the merged v3.12.0 lane did
 

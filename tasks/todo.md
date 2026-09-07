@@ -2,13 +2,13 @@
 
 **Tasks layout:** Agents MUST follow [`tasks/CLAUDE.md`](CLAUDE.md) § Agent requirements (`active/` · `reference/` · `archive/` only; local gates enforce).
 
-**Current branch:** `fix/thread-member-completeness` from `origin/main` at `73a7532`; AGENTIC-2794 (thread member completeness) implementation and live acceptance are complete, pending release gate, PR, and Cayman merge approval.
+**Current branch:** `fix/thread-member-completeness` from `origin/main` at `73a7532`; AGENTIC-2794 (thread member completeness) implementation, live acceptance, and the release gate are complete; PR #105 is open with founder merge approval and is being merged now, carrying a version bump to 3.12.2.
 
-**Main state:** `main` and `origin/main` are at `73a7532`. The current branch carries no merge, tag, release, or installed-plugin promotion.
+**Main state:** `main` was at `73a7532` (tag `v3.12.1`) when this branch opened. PR #105 merges on top of it and the merge commit is then tagged `v3.12.2` and published as a GitHub Release. Installed-plugin promotion is a separate marketplace step and has not happened.
 
 **Active lane:** [`active/thread-member-completeness-2794/`](active/thread-member-completeness-2794/) — five root causes behind one reported symptom (a conversation returning 5 of 10 members and reporting itself complete). [`handoff-2026-09-07.md`](active/thread-member-completeness-2794/handoff-2026-09-07.md) has the live before/after table; [`2026-09-07-closeout.md`](active/thread-member-completeness-2794/2026-09-07-closeout.md) the decisions and gate evidence; [`2026-09-07-forward-queue.md`](active/thread-member-completeness-2794/2026-09-07-forward-queue.md) the deferred work.
 
-**PR:** [#105](https://github.com/Agentic-Assets/apple-mail-mcp/pull/105) at `620b26c` — OPEN, MERGEABLE, awaiting founder merge approval. Release gate passed and stamped; 2757 tests passing; live acceptance complete. No version bump: this rides the open 3.12.1 lane.
+**PR:** [#105](https://github.com/Agentic-Assets/apple-mail-mcp/pull/105) at HEAD of the branch — MERGEABLE, founder merge approval given, merging now. Release gate passed and stamped; 2757 tests passing; live acceptance complete. The branch now carries a third commit for the version bump. **This change carries a version bump to 3.12.2.** `v3.12.1` is already tagged and released (2026-08-28), so it is not an open lane; the new CHANGELOG entries live under a fresh `## 3.12.2 - 2026-09-07` section and the restored `## 3.12.1` section byte-matches the tag. Closing out therefore means merge → re-run `bash tools/gates/source-release-gate.sh` on clean `main` → signed tag `v3.12.2` → GitHub Release with all three artifacts.
 
 ## What the merged v3.12.0 lane did
 
@@ -28,7 +28,9 @@ Goal: `apple-mail` visible inside each client's own plugin browser (Claude Deskt
 
 **Verify through `.venv/bin/apple-mail`, never through MCP tools.** MCP tools execute the *installed* plugin, which returns a clean answer from stale code until the marketplace promotes a payload.
 
-**Next action:** finish the 3.12.1 release gate, push `fix/calendar-read-and-reply-state`, open the PR, and await Cayman merge approval. After merge, rerun the source release gate on clean `main`, create signed tag `v3.12.1`, publish all three artifacts, and run the marketplace handoff.
+**Next action:** merge PR #105, then on clean `main` rerun `bash tools/gates/source-release-gate.sh`, create and push signed tag `v3.12.2`, publish the GitHub Release with all three artifacts, and run the marketplace handoff.
+
+**The 3.12.1 lane shipped.** `fix/calendar-read-and-reply-state` merged in PR #104, `main` reached `73a7532`, tag `v3.12.1` points at it, and the GitHub Release was published 2026-08-28. Do not create tag `v3.12.1`; the next tag is `v3.12.2`.
 
 **Roadmap:** [`reference/roadmap-2026-07-10.md`](reference/roadmap-2026-07-10.md). Next three builds: port `get_email_source` forward, add junk + colored-flag actions to `update_email_status`, then the typed-`AppleScriptError` error-contract pass.
 

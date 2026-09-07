@@ -5,7 +5,7 @@ here. The plugin/MCPB/marketplace versions track this file.
 
 ## Unreleased
 
-## 3.12.1 - 2026-08-26
+## 3.12.2 - 2026-09-07
 
 - **`get_email_thread` no longer reports a truncated conversation as complete.**
   The per-mailbox candidate scan was bounded by `max_messages`, which is the
@@ -55,6 +55,8 @@ here. The plugin/MCPB/marketplace versions track this file.
   reported ceiling carries the bound that mailbox actually stopped at rather
   than restating a constant. None of this widens the 50-message search or
   inbox ceilings.
+
+## 3.12.1 - 2026-08-26
 
 - **Calendar.app reads use stable object references on hosts where
   `calendarIdentifier` fails.** Calendar listing now recovers opaque IDs from

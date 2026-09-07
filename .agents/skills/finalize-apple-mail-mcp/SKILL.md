@@ -255,9 +255,28 @@ If `HEAD` is on a protected branch (e.g. `main` with branch-protection rules), s
 ### 10. Merge, tag, and release (required; the loop is not closed at "pushed")
 
 **A pushed branch is not a finished change.** Finalize ends when the work is on
-`main` and, if it carries a version, when that version is tagged and released.
-Stopping at "PR opened" leaves a merged-but-untagged version behind, which is
-how `v3.12.0` sat untagged across four PRs.
+`main` and, if it carries a version, when that version is tagged *and released*.
+Both halves are load bearing: `v3.12.0` is tagged but never got a GitHub
+Release, so that version has no downloadable `.zip` / `.plugin` / `.mcpb`.
+
+#### First decide which version the notes belong under
+
+Do this **before** writing a CHANGELOG entry, not at tag time. An empty
+`## Unreleased` heading is *not* evidence that the newest dated section is
+still open — that section may already be shipped, and appending to it makes the
+**published** release notes for that tag describe code the tag does not
+contain.
+
+```bash
+V=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+git tag --list "v$V" && gh release view "v$V" --json tagName,publishedAt 2>/dev/null
+```
+
+Either one returning a hit means that version is **closed**: bump to the next
+patch, open a new dated `## X.Y.Z - YYYY-MM-DD` section above it, and leave the
+shipped section byte-identical to its tag (`git diff vX.Y.Z -- CHANGELOG.md`
+should show only your new section). Both returning nothing means the version is
+genuinely open and you may add to it without bumping.
 
 **Merging needs Cayman's explicit approval** ("merge to main", "Cayman approved
 this merge", or equivalent). Never use GitHub native auto-merge. Ask for it as
@@ -267,6 +286,7 @@ Once approved, the order below is not stylistic — each step invalidates the on
 before it:
 
 ```bash
+.venv/bin/pip install -e .   # only after a version bump; see note below
 gh pr merge <N> --squash --repo Agentic-Assets/apple-mail-mcp   # or --merge
 git checkout main && git fetch origin && git pull --ff-only origin main
 bash tools/gates/source-release-gate.sh          # MUST come after the merge
@@ -282,7 +302,14 @@ identical tree but a new SHA, so the stamp reads stale and the tag push is
 refused. Stamping before the merge is wasted work — budget ~7 minutes for the
 run and do it once, afterward.
 
-**Three preconditions that fail late if unmet:**
+**Four preconditions that fail late if unmet:**
+
+- **After a version bump, refresh the editable install before any gate.** The
+  runtime version comes from installed distribution metadata, not from
+  `pyproject.toml`, so a bump without `.venv/bin/pip install -e .` fails
+  `test_package_version_matches_pyproject` roughly seven minutes into the
+  release-tier run. The test names its own fix; running it up front saves the
+  round trip.
 
 - **A completely clean checkout, including untracked and *gitignored* files.**
   `validate_repo_root.py` scans the filesystem, so a gitignored file still
@@ -294,8 +321,13 @@ run and do it once, afterward.
 - **`user.signingkey` must be set *and* its key loaded.**
   `source_release.py create_tag` runs `git -c gpg.format=ssh tag -s`, which
   forces the format but not the key. The key is machine-local and does not
-  travel. If it is passphrase-protected and absent from `ssh-agent`, signing
-  fails outright — `ssh-add` is the user's to run; never handle the passphrase.
+  travel. It is passphrase-protected, so `ssh-keygen -Y sign` prompts and fails
+  non-interactively when the key is not already in `ssh-agent`. On this Mac the
+  passphrase is in the login keychain, so `ssh-add --apple-load-keychain` loads
+  it **without exposing or handling the passphrase** — run that first and
+  confirm with `ssh-add -l` that the fingerprint matches `signer_fingerprint`
+  in `provenance/source-release-policy.json`. If the keychain does not have it,
+  loading the key is the user's to do; never ask for or handle the passphrase.
 - **HEAD must equal both the fetched and the live `origin/main`.** Run
   `create-release-tag.sh` with no flags first; it previews and prints the exact
   target SHA without signing anything.
@@ -304,6 +336,72 @@ Finally, attach `apple-mail-plugin.zip`, `apple-mail.plugin`, and
 `apple-mail-mcp-v{VERSION}.mcpb` to the GitHub Release. Only the `.zip` is
 tracked in git; the other two are gitignored and exist solely as build output,
 so a Release without them ships an incomplete set.
+
+### 11. Promote the payload to the Marketplace (the fix reaches nobody until this lands)
+
+A GitHub Release is not delivery. Every install surface resolves through
+`Agentic-Assets/Agentic-Assets-Marketplace`, so until the payload is promoted
+there, `mcp__plugin_apple-mail__*` tools still execute the **previously
+installed** version and will answer confidently from stale code. Verify fixes
+through `.venv/bin/python` on repo source, never through MCP tools.
+
+`marketplace-handoff.sh` only verifies the source side. The rest runs in the
+Marketplace checkout, from current `origin/main`:
+
+```bash
+cd <marketplace-checkout>
+python3 tools/prepare_plugin_update.py --plugin apple-mail --next-steps  # read-only
+git checkout -b chore/promote-apple-mail-X.Y.Z
+python3 tools/prepare_plugin_update.py --plugin apple-mail --prepare --next-steps
+```
+
+That prints the **candidate payload digest**, which names every file below.
+Collect fresh acceptance evidence for the four surfaces in
+`provenance/plugin-policies.json` → `required_evidence_surfaces` (`codex_cli`,
+`claude_code`, `cursor_local`, `macos_mail`), commit and **push** the proofs
+first so their blob URLs resolve, then build the evidence JSON referencing each
+proof's pushed URL and SHA-256, and finish:
+
+```bash
+python3 tools/admit_plugin.py --plugin apple-mail --evidence docs/evidence/apple-mail-<digest>.json
+python3 tools/attest_release.py --plugin apple-mail create --operator cayman
+python3 tools/attest_release.py --plugin apple-mail sign \
+  --attestation provenance/attestations/apple-mail-vX.Y.Z-<digest>.json \
+  --signing-key ~/.ssh/id_ed25519_agentic_assets
+export AA_MARKETPLACE_ALLOWED_SIGNERS="$HOME/.agentic-assets/marketplace-release/allowed-signers"
+export AA_MARKETPLACE_SIGNER_FINGERPRINT="$(ssh-keygen -lf "$HOME/.agentic-assets/marketplace-release/release-key.pub" | awk '{print $2}')"
+bash tools/gates/verify-marketplace-release.sh
+```
+
+**Three traps, each of which costs a full gate re-run:**
+
+- **Never point a client at the in-repo staged payload.** `start_mcp.sh`
+  bootstraps its venv *in place*, so a probe run with `cwd` inside
+  `plugins/apple-mail/` leaves a ~99 MB `venv/` and `__pycache__/` behind.
+  Both are gitignored, so `git status` looks clean, but preflight then fails
+  with `payload virtualenv forbidden` and, once the venv is deleted,
+  `provenance payload digest drift` — and neither message names the cause.
+  Copy the payload to a disposable directory, or clean both artifacts in a
+  guaranteed cleanup path.
+- **Drive Claude Code and Codex through isolated `CLAUDE_CONFIG_DIR` and
+  `CODEX_HOME` directories.** Older proofs describe snapshotting and restoring
+  the operator's real config; isolation makes that restore step unnecessary and
+  removes the failure mode where a crashed run leaves the operator's client
+  pointing at a disposable preview.
+- **`verify` needs the *external* trusted allowed-signers path**, not
+  `provenance/allowed-signers` in the repo — the point is that a single PR must
+  not be able to edit both the signature and the trust root. Those two env vars
+  are set nowhere by default; export them as above.
+
+The `macos_mail` surface may invoke exactly one read-only tool
+(`list_accounts`) and must retain only content-free metadata: no account names,
+addresses, message metadata, or content ever enters a proof file. No proof file
+may contain an absolute `/Users/...` path.
+
+The Marketplace is not a protected production repo, so a completed PR there is
+eligible for verified self-merge under `policies/git.md` and ADR 0006. After it
+merges, run `bash tools/gates/refresh-central-marketplace.sh` back in this repo,
+then read back the installed selector and version on each client you claim.
 
 ## Release note
 

@@ -3,7 +3,7 @@
 Linker/facade for the ``search`` package. IO/core/server imports come first so
 the patched seams (``run_applescript``, ``validate_account_name``,
 ``account_not_found_json``, ``asyncio``) resolve as ``apple_mail_mcp.tools.search.<name>``
-attributes for the test suite; the six submodules are then imported (which
+attributes for the test suite; the submodules are then imported (which
 registers the four ``@mcp.tool`` tools exactly once); ``__all__`` re-exports
 every moved symbol so mypy --strict no-implicit-reexport is clean and the
 historical ``apple_mail_mcp.tools.search.<name>`` attribute surface (cli.py +

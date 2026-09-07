@@ -49,6 +49,10 @@ See [`large-inbox-rules.md`](references/large-inbox-rules.md) for the canonical 
 
 For any archive move (`to_mailbox` targeting Archive or similar), the id list in step 2 must already have passed the **Human-Sender Screen** (above) before it reaches step 3; do not build a dry-run from unscreened search results.
 
+When the id list came from `get_email_thread`, check **all four** completeness fields before archiving the conversation as a unit; `thread_incomplete` alone is not a completeness test, and a bounded scan can return a confident subset that leaves part of the conversation behind in the inbox. Raise `scan_messages` for a `scan_ceiling_hit` (`thread_incomplete: true`); widen `recent_days` for `window_truncated` / `date_floor_hit`, and raise `max_messages` for `return_limit_reached` — both of those are caller-chosen bounds, so `thread_incomplete` stays **false** for them. Re-collect before the dry run. `export_emails` has no `scan_messages` parameter: widen the scan by calling `get_email_thread` directly, then export the resulting ids with `export_emails(message_ids=[...])`.
+
+**`export_emails(scope="thread", ...)` passes `max_emails` straight through as the thread's `max_messages`, and it defaults to 25.** A 40-message thread therefore exports 25 members, and every count reconciles — 25 requested, 25 written, no shortfall and no `PARTIAL:` line — because the thread tool was asked for 25. Raise `max_emails` (hard-capped at 50) or, for a longer thread, call `get_email_thread` with a larger `max_messages` and export by `message_ids` in batches.
+
 On a 24k inbox, filter-based mutations re-pay the scan cost for every batch and often time out. Always:
 
 1. **List or search (bounded)**: `search_emails(sender_exact="...", subject_keyword="...", recent_days=30, limit=50)`, `search_emails(sender_domain="...", recent_days=30, limit=50)`, or `list_inbox_emails(...)`; inspect sample subjects.
@@ -76,6 +80,12 @@ Sequence:
 1. `search_emails(..., limit≤50)` preview; escalate only after inspecting sample subjects.
 2. Optional analytics: `get_statistics(scope="sender_stats", sender="...")` or `scope="mailbox_breakdown"` for volume proof.
 3. When deletion risk looms: `export_emails(...)` snapshots before **`manage_trash`**. For preservation or migration evidence, use reviewed ids (or one bounded page) with `format="eml"` to preserve raw RFC 822 source headers and MIME. Use `include_attachments=True` only when required: each attachment is capped at 25 MiB and each batch at 100 MiB, skipped files are reported, and cold Exchange/Gmail caches may need a small page plus a higher `timeout` than the 120-second default.
+
+**An export banner is not proof the export was complete, and neither is the absence of a `PARTIAL:` line.** Only `scope="thread"` reconciles requested ids against written ones: it prints `PARTIAL: exported N of M thread message(s). Searched mailboxes: ...` whenever fewer messages were written than the thread reported, when the mailbox list was capped, or when `get_email_thread` itself reported the conversation may be missing members. `export_emails(message_ids=[...])` and `scope="filtered"` print `⚠ No email found for message_id N` for an id that resolved in no mailbox and emit **no** `PARTIAL:` line for it; `scope="entire_mailbox"` reports no completeness signal at all.
+
+So gate an irreversible step on the ids, not the banner: count the `✓ Exported message_id` lines against the ids you submitted, treat every `⚠ No email found for message_id` and every `PARTIAL:` line as a gap, name the missing count to the user, re-run against the mailbox that holds the rest, and do not proceed to `manage_trash(action="delete_permanent")` until the counts match.
+
+For an `entire_mailbox` page, there is nothing to reconcile against: use reviewed `message_ids` when the export has to be evidence for a delete.
 
 For archive campaigns, apply the **Human-Sender Screen** (above) to the preview results now: drop any human-looking or ambiguous sender from the candidate list before it becomes an id to move. Always quote expected totals after dry runs.
 

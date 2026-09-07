@@ -36,8 +36,7 @@
       "silent": 3
     },
     "plugin/apple_mail_mcp/tools/analytics/attachments.py": {
-      "bare": 3,
-      "silent": 1
+      "bare": 3
     },
     "plugin/apple_mail_mcp/tools/analytics/dashboard.py": {
       "bare": 2

@@ -195,3 +195,152 @@ def _extract_thread_header_tokens(*values: str | None) -> list[str]:
 def _applescript_string_list(values: list[str]) -> str:
     """Render a Python string list as an AppleScript list literal."""
     return "{" + ", ".join(f'"{escape_applescript(value)}"' for value in values) + "}"
+
+
+# ---------------------------------------------------------------------------
+# Thread coverage channel (AGENTIC-2794)
+#
+# The loss counters above answer "did a read throw". These answer the
+# different and, in practice, more damaging question: "did the scan stop
+# looking before it ran out of conversation". A thread truncated by its own
+# bound loses no reads at all, so every counter above stays zero and the short
+# result renders with a clean banner.
+#
+# These rows travel on their own prefixes rather than as extra ``|||`` fields
+# on a record row. ``records._parse_search_records`` splits record rows with
+# ``split("|||", 14)``, so a 16th field would land inside the 15th and corrupt
+# ``was_replied_to``. ``_parse_search_records`` ignores a 3-field line, so
+# these rows must be lifted out in Python *before* it runs -- that is what
+# :func:`split_thread_markers` is for.
+# ---------------------------------------------------------------------------
+
+#: A mailbox's candidate slice filled its bound, so the scan stopped looking
+#: while messages remained behind it. Fields: mailbox, bound.
+THREAD_SCAN_CEILING_PREFIX = "THREAD_SCAN_CEILING|||"
+
+#: The candidate loop exited on the ``recent_days`` cutoff, so older members
+#: exist outside the requested window. Fields: mailbox, cutoff description.
+THREAD_DATE_FLOOR_PREFIX = "THREAD_DATE_FLOOR|||"
+
+#: Per-member attachment count, keyed by numeric Mail id. Fields: id, count,
+#: and an optional reason when the count could not be read (count is then -1).
+THREAD_ATTACHMENT_COUNT_PREFIX = "THREAD_ATTACHMENTS|||"
+
+_THREAD_MARKER_PREFIXES = (
+    THREAD_SCAN_CEILING_PREFIX,
+    THREAD_DATE_FLOOR_PREFIX,
+    THREAD_ATTACHMENT_COUNT_PREFIX,
+)
+
+
+class ThreadMarkers:
+    """Coverage markers lifted out of one thread scan's raw output.
+
+    ``scan_ceilings`` and ``date_floors`` map mailbox name -> detail string;
+    ``attachment_counts`` maps numeric Mail id -> attachment count.
+    """
+
+    __slots__ = ("scan_ceilings", "date_floors", "attachment_counts", "attachment_errors")
+
+    def __init__(self) -> None:
+        self.scan_ceilings: dict[str, str] = {}
+        self.date_floors: dict[str, str] = {}
+        self.attachment_counts: dict[str, int] = {}
+        self.attachment_errors: dict[str, str] = {}
+
+    @property
+    def bounded(self) -> bool:
+        """True when the scan stopped early for either bounded reason."""
+        return bool(self.scan_ceilings or self.date_floors)
+
+    def warnings(self) -> list[str]:
+        """Human-readable caveats, one per distinct bound that fired."""
+        notes: list[str] = []
+        if self.scan_ceilings:
+            named = ", ".join(f"{mb} ({bound})" for mb, bound in sorted(self.scan_ceilings.items()))
+            notes.append(
+                "Thread scan ceiling reached: the candidate slice filled its bound in "
+                f"{len(self.scan_ceilings)} mailbox(es) ({named}), so messages behind it were never "
+                "examined for thread membership. This thread may be missing members. Raise "
+                "scan_messages, or narrow to the mailbox that holds the conversation."
+            )
+        if self.date_floors:
+            named = ", ".join(sorted(self.date_floors))
+            notes.append(
+                f"Thread scan stopped at the recent_days cutoff in {len(self.date_floors)} mailbox(es) "
+                f"({named}); members older than the window exist and were not enumerated. "
+                "Widen recent_days to reach them."
+            )
+        if self.attachment_errors:
+            notes.append(
+                f"Attachment counts could not be read for {len(self.attachment_errors)} thread "
+                "member(s); their attachment_count is null, which is not the same as zero."
+            )
+        return notes
+
+
+def split_thread_markers(output: str) -> tuple[str, ThreadMarkers]:
+    """Split coverage-marker rows out of raw thread output.
+
+    Returns the remaining text (safe to hand to ``_parse_search_records``)
+    and the parsed markers. Malformed marker rows are dropped rather than
+    raised on: a marker is a caveat channel, and losing one must never turn a
+    usable thread into an error.
+    """
+    markers = ThreadMarkers()
+    kept: list[str] = []
+    for line in output.splitlines():
+        prefix = next((p for p in _THREAD_MARKER_PREFIXES if line.startswith(p)), None)
+        if prefix is None:
+            kept.append(line)
+            continue
+        first, _, second = line[len(prefix) :].partition("|||")
+        key = first.strip()
+        if not key:
+            continue
+        if prefix == THREAD_SCAN_CEILING_PREFIX:
+            markers.scan_ceilings[key] = second.strip()
+        elif prefix == THREAD_DATE_FLOOR_PREFIX:
+            markers.date_floors[key] = second.strip()
+        else:
+            count_text, _, reason = second.partition("|||")
+            try:
+                count = int(count_text.strip())
+            except ValueError:
+                continue
+            if count < 0:
+                markers.attachment_errors[key] = reason.strip() or "unreadable"
+            else:
+                markers.attachment_counts[key] = count
+    return "\n".join(kept), markers
+
+
+def thread_coverage_report() -> str:
+    """AppleScript reporting one mailbox's coverage bounds, run per mailbox.
+
+    Splice inside the mailbox ``repeat`` loop, after that mailbox's candidate
+    loop has finished and while ``currentMailboxName`` still names it.
+    Assumes ``recordRows``, ``threadCoverageNotes``, ``threadScanCeilingHit``
+    and ``threadDateFloorHit`` are in scope.
+
+    Both channels again (see :func:`candidate_failure_report`): a caveat that
+    reached only ``recordRows`` would be invisible in text mode, and one that
+    reached only the text would be invisible in JSON mode. The text goes to
+    ``threadCoverageNotes`` rather than straight to ``outputText`` because this
+    runs *before* the ``FOUND N`` banner is written; the caller flushes the
+    notes after the render so the caveats read as caveats on a result rather
+    than as a preamble to one.
+
+    The ceiling is suppressed when the date floor fired: reaching the
+    ``recent_days`` cutoff means the window ran out before the slice did, so
+    the slice was not the limiting bound and saying otherwise would send the
+    caller to raise ``scan_messages`` when they need to widen ``recent_days``.
+    """
+    return f"""
+                    if threadDateFloorHit then
+                        set end of recordRows to "{THREAD_DATE_FLOOR_PREFIX}" & currentMailboxName & "|||recent_days cutoff"
+                        set threadCoverageNotes to threadCoverageNotes & "PARTIAL: scan stopped at the recent_days cutoff in " & currentMailboxName & "; older thread members were not enumerated" & return
+                    else if threadScanCeilingHit then
+                        set end of recordRows to "{THREAD_SCAN_CEILING_PREFIX}" & currentMailboxName & "|||" & (scanUpperBound as string)
+                        set threadCoverageNotes to threadCoverageNotes & "PARTIAL: scan ceiling reached in " & currentMailboxName & " after " & (scanUpperBound as string) & " message(s); this thread may be missing members" & return
+                    end if"""

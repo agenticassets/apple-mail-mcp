@@ -80,6 +80,11 @@ async def search_emails(
           dispatch even when a default is configured.
         - `recent_days` is applied BEFORE pagination, so `offset` counts
           within the windowed result set.
+        - The per-mailbox scan is sized from the date window, not from the
+          page: `recent_days`, or the age of an explicit `date_from` when
+          only that was passed. It is still clamped to
+          `SCAN_BOUNDS["SEARCH_HARD_CEILING"]` (50 messages per mailbox per
+          call), and a `body_text` scan without `date_from` clamps to 25.
 
     Performance guidance (read before omitting filters on large mailboxes):
         - Multi-account search (account=None) on a 10K+ inbox can be slow.
@@ -175,6 +180,17 @@ async def search_emails(
         responses also include a top-level `draft_scan` object:
         `{"status": "ok" | "error" | "skipped", "scanned": N, "accounts": [...],
         "error"?: "..."}`.
+
+        When a mailbox's scan filled its slice, JSON adds
+        `scan_ceiling_reached`, `scan_bounded`, `scan_ceiling` (the bound that
+        mailbox actually stopped at, not a constant), `scan_ceiling_mailboxes`,
+        and a `warnings` entry; text mode prefixes the same caveat as a
+        `WARNING:` line.
+        `has_more` is unchanged and still describes the scanned window only:
+        `has_more: false` alongside `scan_ceiling_reached` means "no more
+        inside the newest N examined", not "no more in the mailbox", and
+        paging cannot reach past it because every call re-clamps. Narrow with
+        `date_from` / `date_to`, a specific mailbox, or a tighter filter.
     """
     if output_format not in {"text", "json"}:
         return "Error: Invalid output_format. Use: text, json"

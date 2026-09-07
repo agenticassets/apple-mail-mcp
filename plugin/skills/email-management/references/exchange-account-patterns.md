@@ -33,13 +33,15 @@ Thread tools can return **incomplete** results on Exchange:
 - Replies missing from the thread view while present in Sent.
 - `0` hits for a subject you know exists (a course code, a grant name, etc.).
 - Subject-keyword threading diverges from header-based threading.
+- Earlier members sitting past the newest messages of a busy mailbox, so the candidate scan stops before the conversation does.
 
 **Mitigation:**
 
 1. Anchor on `message_id` when the schema supports it.
-2. Independently search Sent: `search_emails(mailbox="Sent", sender=<user address>, recent_days=14, subject_keyword=...)`.
-3. Check Drafts with `get_email_thread(account=..., mailbox="Drafts", ...)` or `manage_drafts(action="list")`.
-4. If thread and Sent disagree, trust **Sent date order** over an empty thread view.
+2. Call with `output_format="json"` and read **all four** completeness signals; they are separate and non-overlapping, so `thread_incomplete` alone is not a completeness test. `thread_incomplete` is true only when a bound you did *not* choose cut the thread short: a mailbox's scan filled its slice (`scan_ceiling_hit`, remedy: a larger `scan_messages`), rows were counted but not returned, a candidate read threw, or the anchor itself had to be recovered (`anchor_recovered`). Your own `recent_days` cutoff leaves `thread_incomplete` **false** and sets `window_truncated: true` + `date_floor_hit` instead (remedy: a wider `recent_days`); your own `max_messages` return bound also leaves it false and sets `return_limit_reached: true` (remedy: a larger `max_messages`). `matched == returned` with an empty `errors` does **not** settle it: a scan that stops early loses no reads, so no failure counter moves. Text mode prints `PARTIAL:` lines for the ceiling and the date floor but carries none of these fields.
+3. Independently search Sent: `search_emails(mailbox="Sent", sender=<user address>, recent_days=14, subject_keyword=...)`.
+4. Check Drafts with `get_email_thread(account=..., mailbox="Drafts", ...)` or `manage_drafts(action="list")`.
+5. If thread and Sent disagree, trust **Sent date order** over an empty thread view.
 
 ## Offset pagination drifts after archives
 

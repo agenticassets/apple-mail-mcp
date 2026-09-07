@@ -8,13 +8,13 @@ in ``thread_helpers``; they are re-exported here so the historical
 ``search`` package facade so the corresponding test patch seams keep firing.
 """
 
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
 from apple_mail_mcp.applescript_snippets import iso_datetime_handlers, sanitize_field_handler, thread_headers_block
 from apple_mail_mcp.backend.base import ToolError, serialize_tool_error
-from apple_mail_mcp.constants import THREAD_PREFIXES
+from apple_mail_mcp.bounded_scan import compute_scan_upper_bound
+from apple_mail_mcp.constants import SCAN_BOUNDS, THREAD_PREFIXES
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     escape_applescript,
@@ -23,16 +23,10 @@ from apple_mail_mcp.core import (
 )
 from apple_mail_mcp.core.reply_state import was_replied_fragment
 from apple_mail_mcp.server import READ_ONLY_TOOL_ANNOTATIONS, mcp
-from apple_mail_mcp.tools import reply_state_wiring as _reply_state
 from apple_mail_mcp.tools import search
+from apple_mail_mcp.tools.search.anchor import resolve_message_mailbox
 from apple_mail_mcp.tools.search.by_id import _fetch_email_record_by_id
-from apple_mail_mcp.tools.search.records import (
-    _build_applescript_date,
-    _mailbox_error_texts,
-    _non_ceiling_errors,
-    _parse_search_records,
-    _script_error_message,
-)
+from apple_mail_mcp.tools.search.records import _build_applescript_date
 from apple_mail_mcp.tools.search.thread_helpers import (
     _HEADER_MESSAGE_ID_RE as _HEADER_MESSAGE_ID_RE,
 )
@@ -46,13 +40,14 @@ from apple_mail_mcp.tools.search.thread_helpers import (
     _normalize_thread_header_id as _normalize_thread_header_id,
 )
 from apple_mail_mcp.tools.search.thread_helpers import (
-    _thread_error_type,
-    candidate_failure_report,
-    render_failure_report,
-)
-from apple_mail_mcp.tools.search.thread_helpers import (
     _thread_strip_prefixes_handler as _thread_strip_prefixes_handler,
 )
+from apple_mail_mcp.tools.search.thread_helpers import (
+    candidate_failure_report,
+    render_failure_report,
+    thread_coverage_report,
+)
+from apple_mail_mcp.tools.search.thread_payload import ThreadRequest, build_thread_payload
 
 
 def _thread_mailbox_script(mailbox: str, mailboxes: list[str] | None) -> str:
@@ -116,6 +111,7 @@ def get_email_thread(
     mailbox: str = "INBOX",
     mailboxes: list[str] | None = None,
     max_messages: int = 50,
+    scan_messages: int | None = None,
     recent_days: float = 2.0,
     include_preview: bool = True,
     output_format: str = "text",
@@ -144,7 +140,13 @@ def get_email_thread(
           mailbox: Mailbox to search in (default: "INBOX", use "All" for all mailboxes).
               Ignored when ``mailboxes`` is provided.
           mailboxes: Explicit mailbox list to search. Prefer this over ``mailbox="All"``.
-          max_messages: Maximum number of thread messages to return (default: 50)
+          max_messages: Maximum number of thread *matched* messages to return
+              (default: 50). This is the return bound, not the scan bound.
+          scan_messages: Override for how many messages are examined per
+              mailbox while looking for members. Defaults to a window-scaled
+              bound (``SCAN_BOUNDS["THREAD_SCAN_*"]``), clamped to
+              ``THREAD_SCAN_HARD_CEILING``. Raise it when ``thread_incomplete``
+              is true with a ``scan_ceiling_hit`` entry.
           recent_days: Only scan messages received within this many days (default: 2.0
               = 48h). ``recent_days=0`` is rejected with ``UNBOUNDED_SCAN_REQUIRED``.
           include_preview: Include content previews in output. Set false to avoid
@@ -184,6 +186,22 @@ def get_email_thread(
           (`type: "candidate_scan_error"`; text mode prints its own `PARTIAL:`
           line). It is invisible to `matched`/`returned`, which are short
           together, so the thread may be missing messages entirely.
+
+          Completeness is reported as FOUR independent checks; read all of
+          them, because `thread_incomplete` alone is not a completeness test.
+          `thread_incomplete` covers only bounds you did NOT choose: a short
+          render, a candidate scan that threw, a mailbox whose slice filled
+          (`scan_ceiling_hit` — raise `scan_messages`, capped at 400), a
+          recovered anchor, or a script error. Your own bounds are reported
+          apart from it and leave it false: `window_truncated` /
+          `date_floor_hit` (the `recent_days` cutoff stopped the scan — widen
+          `recent_days`) and `return_limit_reached` (the thread filled
+          `max_messages` — raise it). `scan_messages_applied` reports the
+          slice used, and each item carries `attachment_count` (null when
+          unreadable, which is not 0). An anchor the scan missed is appended
+          with `anchor_recovered: true` plus a warning, not dropped. These
+          fields are JSON-only; use `output_format="json"` to check
+          completeness.
     """
     validation_timeout = 30 if timeout is None else min(timeout, 30)
     account_err = search.validate_account_name(account, timeout=validation_timeout)
@@ -198,6 +216,9 @@ def get_email_thread(
 
     if max_messages <= 0:
         return "Error: max_messages must be > 0"
+
+    if scan_messages is not None and scan_messages <= 0:
+        return "Error: scan_messages must be > 0"
 
     if mailboxes is not None:
         mailboxes = [mb.strip() for mb in mailboxes if mb and mb.strip()]
@@ -222,12 +243,33 @@ def get_email_thread(
     resolved_mailbox = mailbox
     resolved_subject = subject_keyword or ""
     anchor: dict[str, Any] | None = None
+    anchor_mailbox_resolved = False
 
     if message_id:
         normalized_ids = normalize_message_ids([message_id])
         if not normalized_ids:
             return "Error: message_id must be a numeric Apple Mail message id"
         lookup_mailboxes = mailboxes or [mailbox]
+        if not mailboxes and mailbox.lower() == "all":
+            # "All" expands to every mailbox for the *scan* but is meaningless
+            # to a by-name fetch, so this used to hand Mail the literal string
+            # and return `Mailbox not found: All` for a supported argument.
+            try:
+                probed_mailbox = resolve_message_mailbox(account, message_id, timeout=effective_timeout)
+            except AppleScriptTimeout:
+                return (
+                    f"Error: AppleScript timed out while resolving the mailbox for "
+                    f"message_id={normalized_ids[0]} on account {account!r}. Pass an explicit "
+                    '`mailboxes` list instead of mailbox="All", or a larger `timeout`.'
+                )
+            if not probed_mailbox:
+                return (
+                    f"Error: No email found for message_id={normalized_ids[0]} in the first "
+                    f"{SCAN_BOUNDS['THREAD_ANCHOR_MAILBOX_PROBE_CAP']} mailbox(es) of account "
+                    f"{account!r}. Pass an explicit `mailboxes` list naming the mailbox."
+                )
+            lookup_mailboxes = [probed_mailbox]
+            anchor_mailbox_resolved = True
         for lookup_mailbox in lookup_mailboxes:
             try:
                 anchor = _fetch_email_record_by_id(
@@ -251,7 +293,11 @@ def get_email_thread(
             searched = ", ".join(lookup_mailboxes)
             return f"Error: No email found for message_id={normalized_ids[0]} in {searched}"
         resolved_subject = anchor.get("subject", "") or resolved_subject
-        resolved_mailbox = anchor.get("mailbox") or mailbox
+        if not anchor_mailbox_resolved:
+            # The probe answers where the *anchor* lives, not where the thread
+            # lives, so letting it set the scope under mailbox="All" would
+            # silently narrow a whole-account request to one mailbox.
+            resolved_mailbox = anchor.get("mailbox") or mailbox
 
     escaped_account = escape_applescript(account)
 
@@ -270,20 +316,33 @@ def get_email_thread(
     thread_strategy = "header_first" if header_matching_enabled else "subject"
     header_tokens_literal = _applescript_string_list(header_tokens)
 
-    date_setup = ""
-    if effective_recent_days > 0:
-        cutoff = datetime.now() - timedelta(days=effective_recent_days)
-        date_setup = _build_applescript_date("cutoffDate", cutoff.strftime("%Y-%m-%d"))
+    # ``effective_recent_days`` is > 0 from here on: a non-positive window
+    # already returned UNBOUNDED_SCAN_REQUIRED above, so there is no unbounded
+    # variant of the cutoff date, the window banner, or the date floor below.
+    cutoff = datetime.now() - timedelta(days=effective_recent_days)
+    date_setup = _build_applescript_date("cutoffDate", cutoff.strftime("%Y-%m-%d"))
+    window_line = "Window: last 48h" if effective_recent_days == 2.0 else f"Window: last {effective_recent_days}d"
 
-    if effective_recent_days <= 0:
-        window_line = "Window: full inbox"
-    elif effective_recent_days == 2.0:
-        window_line = "Window: last 48h"
+    # The scan bound is not the return bound. This was `max_messages`, so a
+    # live 9-member thread returned 5 and called itself complete. Size the
+    # slice from the date window instead (AGENTIC-2794).
+    if scan_messages is not None:
+        desired_scan = scan_messages
     else:
-        window_line = f"Window: last {effective_recent_days}d"
-
-    scan_cap = max_messages
-    date_check = "if messageDate < cutoffDate then exit repeat" if effective_recent_days > 0 else ""
+        desired_scan = max(
+            max_messages,
+            compute_scan_upper_bound(
+                effective_recent_days,
+                base_cap=SCAN_BOUNDS["THREAD_SCAN_BASE_CAP"],
+                window_cap=SCAN_BOUNDS["THREAD_SCAN_WINDOW_CAP"],
+                days_scale=SCAN_BOUNDS["THREAD_SCAN_DAYS_SCALE"],
+            ),
+        )
+    scan_cap = min(desired_scan, SCAN_BOUNDS["THREAD_SCAN_HARD_CEILING"])
+    date_check = """if messageDate < cutoffDate then
+                                    set threadDateFloorHit to true
+                                    exit repeat
+                                end if"""
     sanitize_script = sanitize_field_handler()
     thread_headers_script = thread_headers_block(
         message_var="aMessage",
@@ -294,9 +353,13 @@ def get_email_thread(
     was_replied_fragment_script = was_replied_fragment(var="aMessage")
     candidate_collection = f"""
                                 set candidateMessages to {{}}
+                                set threadScanCeilingHit to false
+                                set threadDateFloorHit to false
+                                set currentMailboxName to my sanitize_field(name of currentMailbox)
                                 set messageCount to count of messages of currentMailbox
                                 if messageCount > {scan_cap} then
                                     set scanUpperBound to {scan_cap}
+                                    set threadScanCeilingHit to true
                                 else
                                     set scanUpperBound to messageCount
                                 end if
@@ -354,6 +417,7 @@ def get_email_thread(
         set threadCandidateScanned to 0
         set threadCandidateFailures to 0
         set threadMailboxFailures to 0
+        set threadCoverageNotes to ""
         {date_setup}
 
         try
@@ -412,6 +476,7 @@ def get_email_thread(
                             end try
                         end repeat
                     end ignoring
+{thread_coverage_report()}
                 on error
                     set threadMailboxFailures to threadMailboxFailures + 1
                 end try
@@ -445,6 +510,16 @@ def get_email_thread(
                     try
                         set internetMessageId to my sanitize_field(message id of aMessage)
                     end try
+                    try
+                        set end of recordRows to "THREAD_ATTACHMENTS|||" & messageId & "|||" & ((count of mail attachments of aMessage) as string)
+                    on error attachErr
+                        -- The count reaches Python as null, a different answer
+                        -- from 0, and the reason rides along so an unreadable
+                        -- attachment list is diagnosable rather than merely
+                        -- absent. Dropping the whole member here would be a
+                        -- worse failure than not knowing its count.
+                        set end of recordRows to "THREAD_ATTACHMENTS|||" & messageId & "|||-1|||" & my sanitize_field(attachErr)
+                    end try
                     set mailboxName to my sanitize_field(name of mailbox of aMessage)
                     set accountName to my sanitize_field(name of account of mailbox of aMessage)
                     set receivedAt to my iso_datetime(messageDate)
@@ -475,6 +550,7 @@ def get_email_thread(
                     set threadRenderFailures to threadRenderFailures + 1
                 end try
             end repeat{render_failure_report(escaped_render_scope)}
+            set outputText to outputText & threadCoverageNotes
 
         on error errMsg
             return "Error: " & errMsg
@@ -499,100 +575,24 @@ def get_email_thread(
             f"{effective_timeout}s. Retry with a larger timeout or tighter filters."
         )
     if output_format == "json":
-        selection_strategy = thread_strategy
-        parse_result = result
-        script_error: str | None = None
-        matched_count: int | None = None
-        if result.startswith("THREAD_STRATEGY|||"):
-            first_line, _, remaining = result.partition("\n")
-            header_fields = first_line.split("|||")
-            selection_strategy = header_fields[1].strip() or selection_strategy
-            # Field 3 is the FOUND count. Text mode printed it and JSON mode
-            # dropped it, so a JSON caller could not detect a truncated thread.
-            if len(header_fields) > 2 and header_fields[2].strip().isdigit():
-                matched_count = int(header_fields[2].strip())
-            parse_result = remaining
-        else:
-            # The script's own `on error` handler returns "Error: <msg>" as the
-            # whole result, which parses to zero rows. Without this check a
-            # thread scan that threw is indistinguishable from an empty thread
-            # (text mode already returns the raw error string below).
-            script_error = _script_error_message(result)
-        records, mailbox_errors = _parse_search_records(parse_result)
-        sent_snapshots, sent_accounts_requested = _reply_state.new_sent_reply_scan()
-        snapshots = _reply_state.annotate_rows_with_reply_state(
-            records,
-            runner=search.run_applescript,
-            timeout=effective_timeout,
-            include_draft_state=include_draft_state,
-            include_sent_reply_state=True,
-            date_field="received_date",
-            sent_snapshots=sent_snapshots,
-            sent_accounts_requested=sent_accounts_requested,
+        return build_thread_payload(
+            result,
+            ThreadRequest(
+                account=account,
+                resolved_mailbox=resolved_mailbox,
+                mailboxes=mailboxes,
+                cleaned_keyword=cleaned_keyword,
+                thread_strategy=thread_strategy,
+                include_preview=include_preview,
+                recent_days_applied=effective_recent_days,
+                max_messages=max_messages,
+                scan_messages_applied=scan_cap,
+                effective_timeout=effective_timeout,
+                include_draft_state=include_draft_state,
+                message_id=message_id,
+                header_tokens=header_tokens,
+                anchor=anchor,
+                anchor_mailbox_resolved=anchor_mailbox_resolved,
+            ),
         )
-        draft_scan = _reply_state.build_draft_scan_status(snapshots)
-        rendered = len(records)
-        if matched_count is None:
-            matched_count = rendered
-        # A candidate read that threw never entered ``threadMessages``, so it is
-        # missing from ``FOUND N`` too: ``matched`` and ``returned`` are short
-        # together and reconcile cleanly. This flag is the only thing that says
-        # the thread itself may be incomplete.
-        candidate_incomplete = any(
-            _thread_error_type(item.get("message", "")) == "candidate_scan_error" for item in mailbox_errors
-        )
-        payload: dict[str, Any] = {
-            "items": records,
-            "returned": rendered,
-            "matched": matched_count,
-            "render_incomplete": matched_count > rendered,
-            "candidate_scan_incomplete": candidate_incomplete,
-            "account": account,
-            "mailbox": resolved_mailbox,
-            "mailboxes": mailboxes or [resolved_mailbox],
-            "subject_keyword": cleaned_keyword,
-            "strategy": thread_strategy,
-            "selection_strategy": selection_strategy,
-            "subject_fallback_used": selection_strategy == "subject_fallback",
-            "include_preview": include_preview,
-            "recent_days_applied": effective_recent_days,
-            "max_messages": max_messages,
-            "draft_scan": draft_scan,
-            "sent_reply_scan": _reply_state.build_sent_reply_scan_status(sent_snapshots, sent_accounts_requested),
-        }
-        if script_error is not None:
-            payload["error"] = script_error
-            payload["errors"] = [script_error]
-        # Keyed off the real failures, not the raw list: ``mailbox_errors`` can
-        # carry ``SCAN_CEILING`` marker rows, which ``_non_ceiling_errors`` drops
-        # because a saturated scan is a bound, not a failure. Keying off the raw
-        # list would attach an EMPTY ``errors`` to a ceiling-only payload and
-        # suppress the render reconciliation below.
-        failures = _non_ceiling_errors(mailbox_errors)
-        if failures:
-            payload.setdefault("errors", []).extend(_mailbox_error_texts(failures))
-            payload["error_details"] = [
-                {"mailbox": item["mailbox"], "type": _thread_error_type(item["message"]), "message": item["message"]}
-                for item in failures
-            ]
-        elif matched_count > rendered:
-            # More thread messages counted than rows returned, with no
-            # attribution from the script (e.g. a row the parser dropped).
-            shortfall = f"thread render returned {rendered} of {matched_count} matched message(s); results incomplete"
-            payload.setdefault("errors", []).append(shortfall)
-            payload["error_details"] = [{"mailbox": resolved_mailbox, "type": "render_mismatch", "message": shortfall}]
-        if anchor is not None:
-            payload["anchor"] = {
-                "message_id": anchor.get("message_id", ""),
-                "internet_message_id": anchor.get("internet_message_id", ""),
-                "subject": anchor.get("subject", ""),
-                "mailbox": anchor.get("mailbox", resolved_mailbox),
-                "in_reply_to": anchor.get("in_reply_to", ""),
-                "references": anchor.get("references", ""),
-            }
-        if message_id and not header_tokens:
-            payload["warnings"] = [
-                "message_id anchor had no thread headers; subject fallback was used",
-            ]
-        return json.dumps(payload)
     return result

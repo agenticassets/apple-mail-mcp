@@ -65,6 +65,15 @@ _SCAN_CEILING_PREFIX = "SCAN_CEILING|||"
 #: :func:`_build_search_response` both defer to it rather than re-deciding.
 _SCAN_CEILING_ERROR_TYPE = "scan_ceiling"
 
+#: Key carrying the *numeric* bound the marker row reported, kept as a string so
+#: the ``list[dict[str, str]]`` shape every consumer already handles is
+#: unchanged. The bound is per-mailbox and is not necessarily
+#: ``SEARCH_HARD_CEILING``: it is whatever ``scan_cap`` the builder emitted for
+#: that call (a body-capped scan stops at 25, a window-sized one anywhere
+#: between the page floor and the ceiling). Reporting the constant instead let
+#: the warning claim "the newest 50" for a scan that actually stopped at 25.
+_SCAN_CEILING_BOUND_KEY = "scan_ceiling"
+
 _SCRIPT_ERROR_PREFIXES = ("ERROR|||", "Error: ")
 
 
@@ -151,16 +160,20 @@ def _parse_search_records(
         if line.startswith(_SCAN_CEILING_PREFIX):
             tail = line[len(_SCAN_CEILING_PREFIX) :]
             mb, _, scanned = tail.partition("|||")
-            mailbox_errors.append(
-                {
-                    "mailbox": mb.strip(),
-                    "type": _SCAN_CEILING_ERROR_TYPE,
-                    "message": (
-                        f"scan stopped at the {scanned.strip()}-message ceiling for this mailbox; "
-                        "results are bounded by the scan, not by the filter"
-                    ),
-                }
-            )
+            bound = scanned.strip()
+            entry = {
+                "mailbox": mb.strip(),
+                "type": _SCAN_CEILING_ERROR_TYPE,
+                "message": (
+                    f"scan stopped at the {bound}-message ceiling for this mailbox; "
+                    "results are bounded by the scan, not by the filter"
+                ),
+            }
+            # Keep the bound as data, not only as prose: `_build_search_response`
+            # reports it verbatim instead of restating a constant.
+            if bound.isdigit():
+                entry[_SCAN_CEILING_BOUND_KEY] = bound
+            mailbox_errors.append(entry)
             continue
         parts = line.split("|||", 14)
         if len(parts) < 8:
@@ -353,8 +366,17 @@ def _build_search_response(
     # bit; it was that `has_more: false` reads as "that is everything in the
     # mailbox" when it can only mean "that is everything in the newest N
     # messages". So the fix is to say which one it is.
-    _scan_ceiling = SCAN_BOUNDS["SEARCH_HARD_CEILING"]
     ceiling_details = [d for d in error_details or [] if d.get("type") == _SCAN_CEILING_ERROR_TYPE]
+    # The bound each mailbox actually stopped at, as reported by its own marker
+    # row. `SEARCH_HARD_CEILING` is only the fallback for an entry that carries
+    # no bound (an older-shaped payload), never the answer when the scan said
+    # otherwise. Mailboxes can disagree (a body-capped scan alongside a
+    # window-sized one); report the largest, so the figure is never below any
+    # single mailbox's bound and the named mailbox list stays the precise part.
+    _reported_bounds = [
+        int(d[_SCAN_CEILING_BOUND_KEY]) for d in ceiling_details if d.get(_SCAN_CEILING_BOUND_KEY, "").isdigit()
+    ]
+    _scan_ceiling = max(_reported_bounds) if _reported_bounds else SCAN_BOUNDS["SEARCH_HARD_CEILING"]
     _ceiling_mailboxes: list[str] = []
     _ceiling_warning = ""
     if ceiling_details:

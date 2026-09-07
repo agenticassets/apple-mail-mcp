@@ -83,8 +83,10 @@ TIME_RANGES = {
 # ~9,700-message Exchange inbox, cold-cache property reads on a 250-message
 # scan slice (search) or 500-message bind (inbox read-status filter) blew
 # past wrapper timeouts. `SEARCH_HARD_CEILING` / `INBOX_HARD_CEILING` clamp
-# every scan path to 50 messages read per call regardless of how the
-# scaled caps below compute.
+# the search and inbox scan paths to 50 messages read per call regardless of
+# how the scaled caps below compute. `THREAD_SCAN_HARD_CEILING` is the one
+# deliberate exception (see its comment): thread reconstruction is scoped to
+# one conversation and must reach members that sit past a mailbox's newest 50.
 # ---------------------------------------------------------------------------
 SCAN_BOUNDS = {
     # Compose subject/draft fallbacks (drafts mailboxes are usually small).
@@ -107,6 +109,24 @@ SCAN_BOUNDS = {
     "BODY_SEARCH_AUTO_CAP": 25,  # body_text without explicit date_from
     # Hard ceiling applied after scan_cap in _build_search_script.
     "SEARCH_HARD_CEILING": 50,
+    # get_email_thread candidate-scan window, via
+    # bounded_scan.compute_scan_upper_bound(). Deliberately larger than the
+    # search caps above and NOT clamped to SEARCH_HARD_CEILING: thread
+    # reconstruction has to reach every member of one conversation, and a
+    # conversation's earlier members routinely sit past the newest 50
+    # messages of a busy mailbox. Before AGENTIC-2794 the thread scan reused
+    # `max_messages` (default 50) as its per-mailbox slice, so a 9-message
+    # conversation returned 5 members and reported itself complete. Measured
+    # on a live Exchange account: raising the slice from 50 to 150 across
+    # three mailboxes took the call from 6.8s to 10.9s and recovered all
+    # members; 400 cost no more than 150.
+    "THREAD_SCAN_BASE_CAP": 120,
+    "THREAD_SCAN_DAYS_SCALE": 15,  # added per recent_days day
+    "THREAD_SCAN_WINDOW_CAP": 400,
+    # Hard ceiling applied after the scaled cap in get_email_thread.
+    "THREAD_SCAN_HARD_CEILING": 400,
+    # Mailboxes probed when resolving an anchor id under mailbox="All".
+    "THREAD_ANCHOR_MAILBOX_PROBE_CAP": 20,
     # Multi-mailbox search fan-out limits.
     "MAX_MAILBOXES_PER_SEARCH": 20,
     "MAX_MAILBOXES_PER_SEARCH_ALL": 10,

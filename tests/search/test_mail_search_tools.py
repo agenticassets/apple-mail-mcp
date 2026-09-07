@@ -293,10 +293,20 @@ class SearchToolTests(unittest.TestCase):
         `messages 1 thru N` directly instead of `every message`.
 
         Phase A: ``recent_days=0`` is no longer accepted (the
-        ``allow_full_scan`` escape hatch was retired). Use an explicit
-        ``date_from`` to exercise the no-window branch — the search helper
-        zeros ``effective_recent_days`` internally so ``scan_cap`` falls
-        back to ``base_cap = limit + 1 + offset``.
+        ``allow_full_scan`` escape hatch was retired), so this exercises the
+        explicit-``date_from`` branch — ``search_emails`` zeros
+        ``effective_recent_days`` when the caller passes ``date_from``.
+
+        AGENTIC-2794 changed the expected bound. This used to assert
+        ``scanUpperBound to 11`` (``base_cap = limit + 1 + offset``), which was
+        the defect, not the contract: a caller who bounds the window with
+        ``date_from`` instead of ``recent_days`` was handed the *page* as the
+        scan, so a needle query with a small limit searched fewer messages than
+        the same query with a large one. The window now sizes the slice
+        whichever parameter spells it, so a months-old ``date_from`` scales to
+        ``SEARCH_WINDOW_CAP`` (50). The binding shape this test exists to pin —
+        ``messages 1 thru scanUpperBound``, never ``every message`` — is
+        unchanged.
         """
         captured = {}
 
@@ -315,7 +325,7 @@ class SearchToolTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("set scanUpperBound to 11", captured["script"])
+        self.assertIn("set scanUpperBound to 50", captured["script"])
         self.assertIn("messages 1 thru scanUpperBound of currentMailbox", captured["script"])
         # `every message` should not appear as the binding source (the helper
         # functions don't reference it either in this branch).
@@ -1174,6 +1184,17 @@ class GetEmailThreadTests(unittest.TestCase):
     """Phase 2 scan-path hardening for get_email_thread."""
 
     def test_get_email_thread_default_emits_whose_date_filter_and_cap(self):
+        """The candidate slice is sized from the date window, not ``max_messages``.
+
+        This test used to assert ``scanUpperBound == max_messages``, which was
+        the AGENTIC-2794 defect written down as a contract: bounding the *scan*
+        by the *return* limit meant a conversation whose earlier members sat
+        past the newest ``max_messages`` messages came back short and reported
+        itself complete. ``recent_days=2`` now scales to
+        ``THREAD_SCAN_BASE_CAP + 2 * THREAD_SCAN_DAYS_SCALE``. The bounded-slice
+        properties this test exists to protect are unchanged: still
+        ``messages 1 thru scanUpperBound``, never ``every message``.
+        """
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -1192,8 +1213,16 @@ class GetEmailThreadTests(unittest.TestCase):
         self.assertIn("EMAIL THREAD VIEW", result)
         self.assertIn("set cutoffDate to current date", script)
         self.assertIn("messageDate < cutoffDate", script)
-        self.assertIn("set scanUpperBound to 25", script)
+        from apple_mail_mcp.constants import SCAN_BOUNDS
+
+        expected_scan = min(
+            SCAN_BOUNDS["THREAD_SCAN_BASE_CAP"] + int(2.0 * SCAN_BOUNDS["THREAD_SCAN_DAYS_SCALE"]),
+            SCAN_BOUNDS["THREAD_SCAN_HARD_CEILING"],
+        )
+        self.assertIn(f"set scanUpperBound to {expected_scan}", script)
+        self.assertNotIn("set scanUpperBound to 25", script)
         self.assertIn("messages 1 thru scanUpperBound of currentMailbox", script)
+        self.assertNotIn("every message of currentMailbox", script)
         self.assertIn("ignoring case", script)
         self.assertIn("Window: last 48h", script)
         self.assertEqual(captured["timeout"], 120)
@@ -1424,7 +1453,10 @@ class GetEmailThreadTests(unittest.TestCase):
         payload = json.loads(result)
         self.assertEqual(payload["strategy"], "subject")
         self.assertIn("warnings", payload)
-        self.assertIn("subject fallback", payload["warnings"][0])
+        self.assertTrue(
+            any("subject fallback" in warning for warning in payload["warnings"]),
+            payload["warnings"],
+        )
 
     def test_get_email_thread_message_id_tries_explicit_mailboxes_for_anchor(self):
         anchor_line = _thread_record_line(
@@ -1456,8 +1488,15 @@ class GetEmailThreadTests(unittest.TestCase):
 
         payload = json.loads(result)
         self.assertEqual(payload["anchor"]["mailbox"], "Sent")
-        self.assertEqual(len(captured), 3)
+        # Two anchor probes (INBOX misses, Sent hits) + the thread scan, then
+        # the draft and sent-reply scans. Those last two are new: the anchor is
+        # now retained when the scan does not return it, so the row set is no
+        # longer empty and the reply-state annotation actually has work to do.
+        self.assertEqual(len(captured), 5)
         self.assertIn('mailbox "Sent" of targetAccount', captured[2])
+        self.assertTrue(payload["items"], "the anchor must survive an empty scan")
+        self.assertTrue(payload["items"][0]["anchor_recovered"])
+        self.assertTrue(payload["thread_incomplete"])
 
 
 class MailboxAllCapTests(unittest.TestCase):
